@@ -2,9 +2,9 @@
 
 ## System Overview
 
-Fully local architecture with clear separation between frontend, backend, and AI services. The backend is built with **Python 3.13 and FastAPI**, the frontend with **React 19**, and the AI layer runs on **Ollama** (local inference) with **PostgreSQL + pgvector** for data and vector search.
+Production architecture on AWS, with clear separation between frontend, backend, and AI services. The backend is built with **Python 3.13 and FastAPI**, the frontend with **React 19**, and the AI layer is served through **OpenRouter** (`gpt-4.1` for generation, `text-embedding-3-large` for embeddings) with **PostgreSQL + pgvector** (Amazon RDS) for data and vector search.
 
-Everything runs on the developer's machine. There are no API keys, no cloud account, and no external service calls — model inference, embeddings, database, and cache all execute locally via Docker and Ollama.
+There are no standing AWS credentials in configuration — every AWS-native call (RDS, S3, Secrets Manager, CloudWatch) is authenticated via an IAM role assumed by the running service. The one exception is OpenRouter, a third party outside the AWS trust boundary, whose API key is resolved from Secrets Manager at startup rather than stored anywhere. See [Cloud Deployment (AWS)](cloud-deployment-aws.md) for the full rationale.
 
 ---
 
@@ -16,14 +16,14 @@ Everything runs on the developer's machine. There are no API keys, no cloud acco
 └────────────────────────┬─────────────────────────────────────┘
                          │ HTTPS
 ┌────────────────────────▼─────────────────────────────────────┐
-│          Local Dev Server — Vite (Frontend React 19)         │
+│         AWS Amplify Hosting (Frontend React 19)              │
 │  TypeScript · Tailwind CSS · shadcn/ui · Recharts            │
 │  Framer Motion · TanStack Query · React Hook Form · Zod      │
 └────────────────────────┬─────────────────────────────────────┘
                          │ REST API / WebSockets
-                         │ (JWT, self-issued)
+                         │ (Cognito-issued OAuth2 token)
 ┌────────────────────────▼─────────────────────────────────────┐
-│      Local FastAPI Backend (Uvicorn, optional Docker)        │
+│    AWS App Runner / ECS Fargate — FastAPI Backend             │
 │                                                              │
 │  Governance pipeline (cascade short-circuit):                │
 │                                                              │
@@ -38,41 +38,40 @@ Everything runs on the developer's machine. There are no API keys, no cloud acco
 │     → calibrated score threshold; blocks if ungrounded       │
 │                    ↓                                         │
 │  4. Main LLM — Pragmatic analysis (LLM call #2)              │
-│     → Ollama (llama3.2:3b) with mandatory grounding          │
+│     → OpenRouter (gpt-4.1) with mandatory grounding          │
 │                    ↓                                         │
 │  5. Traceability                                             │
-│     → Full record in PostgreSQL with unique trace_id         │
+│     → Full record in RDS PostgreSQL with unique trace_id     │
 │                                                              │
 │  Orchestration: LangGraph                                    │
 │  Validation: Pydantic v2 + Structured Outputs                │
-│  No API keys, no external calls                             │
+│  Auth: IAM role (AWS services) + Secrets Manager (OpenRouter)│
 └──┬───────────┬──────────────────┬────────────────────────────┘
    │           │                  │
    ▼           ▼                  ▼
-Ollama        PostgreSQL         Redis
-(local)       (Docker)           (Cache, sessions)
-llama3.2:3b   + pgvector
-nomic-embed-  HNSW + GIN index
-text          Traces, vectors,
-               prompt versions
+OpenRouter    Amazon RDS         ElastiCache
+gpt-4.1       PostgreSQL         for Redis
+text-embed-   + pgvector         (Cache, sessions)
+3-large       HNSW + GIN index
+              Traces, vectors,
+              prompt versions
                     │
                     ▼
-             Local structured logs + OpenTelemetry
-             (console exporter)
+             CloudWatch + AWS X-Ray + OpenTelemetry
                     │
                     ▼
-             GitHub Actions (CI: lint + test, evaluation harness)
+             GitHub Actions (CI/CD: lint + test + deploy, OIDC to AWS)
 ```
 
 **Cascade short-circuit pipeline:** if any policy triggers at any step, the flow stops and the main model is never invoked. Order is strict: policies → crisis/retrieval → confidence gate → pragmatic analysis → traceability.
 
-**Why step 2 is parallel.** Crisis detection is strictly blocking, but it does not depend on retrieval and retrieval does not depend on it. Running them concurrently removes roughly 140 ms from every request that passes the check — the vast majority — without weakening the guarantee. If the classifier fires, the retrieval result is discarded and the request short-circuits with a `422`.
+**Why step 2 is parallel.** Crisis detection is strictly blocking, but it does not depend on retrieval and retrieval does not depend on it. Running them concurrently removes latency from every request that passes the check — the vast majority — without weakening the guarantee. If the classifier fires, the retrieval result is discarded and the request short-circuits with a `422`.
 
 ---
 
 ## Frontend
 
-React 19 + TypeScript + Vite, served locally by the Vite dev server (or a static build served by any local web server).
+React 19 + TypeScript + Vite, built as a static bundle and served through **AWS Amplify Hosting**, which builds and deploys on every push to the tracked branch.
 
 | Technology | Role |
 |-|-|
@@ -94,7 +93,7 @@ Main views:
 
 ## Backend
 
-Python 3.13 + FastAPI, run locally via **Uvicorn**, optionally containerized with Docker (see [Deployment](deployment.md)).
+Python 3.13 + FastAPI, containerized with Docker and deployed to **AWS App Runner** (default) or **ECS Fargate** (see [Deployment](deployment.md)).
 
 | Technology | Role |
 |-|-|
@@ -122,7 +121,7 @@ Main pipeline components:
 
 ## RAG Layer
 
-**PostgreSQL + pgvector** with explicitly implemented hybrid retrieval.
+**PostgreSQL + pgvector** (Amazon RDS) with explicitly implemented hybrid retrieval.
 
 pgvector provides vector similarity only, so hybrid search is built in three stages rather than consumed as a feature:
 
@@ -132,7 +131,7 @@ pgvector provides vector similarity only, so hybrid search is built in three sta
 
 A **cross-encoder reranker** then scores the fused candidates jointly and produces the calibrated value that gates generation. The RRF score itself is rank-based and is never used as a confidence threshold.
 
-Documents are chunked and vectorized locally with **Ollama** (`nomic-embed-text`). The corpus is **swappable and configurable**: the retrieval architecture is not coupled to any source, so any compatible document collection can be indexed without touching governance logic.
+Documents are chunked and vectorized via **OpenRouter** (`text-embedding-3-large`, 3072-dim). The corpus is **swappable and configurable**: the retrieval architecture is not coupled to any source, so any compatible document collection can be indexed without touching governance logic.
 
 > Full implementation detail, including the SQL and the rationale for the threshold design, is in [AI Pipeline](ai-pipeline.md).
 
@@ -142,9 +141,9 @@ Documents are chunked and vectorized locally with **Ollama** (`nomic-embed-text`
 
 | Technology | Role |
 |-|-|
-| **PostgreSQL (Docker container)** | Primary database — traces, prompt versions, audit records |
+| **Amazon RDS for PostgreSQL** | Primary database — traces, prompt versions, audit records |
 | **pgvector** | Vector extension for embeddings and semantic search |
-| **Redis** | Cache layer and session management |
+| **Amazon ElastiCache for Redis** | Cache layer and session management |
 
 Each interaction generates a persistent record identified by a unique `trace_id` that includes: input message and context, retrieved fragments with vector/lexical/RRF/reranker scores, embedding and reranker model identity, exact prompt and version (`prompt_version`), model version, confidence level, applied policy (if any), `grounded` field, per-stage latency, and timestamp.
 
@@ -158,17 +157,19 @@ This separation allows an erasure request to null the text while leaving the aud
 
 ---
 
-## Local Infrastructure
+## AWS Infrastructure
 
 | Component | Role |
 |-|-|
-| **Docker Compose** | Orchestrates PostgreSQL, Redis, and (optionally) the backend and frontend containers |
-| **Ollama** | Local inference server for `llama3.2:3b` and `nomic-embed-text` — runs natively on the host to use the GPU directly |
-| **PostgreSQL + pgvector** | Traces, vectors, audit records — single container, single consistency model |
-| **Redis** | Cache and session storage |
-| **Local filesystem** | Document storage for the RAG corpus |
+| **AWS App Runner / ECS Fargate** | Runs the FastAPI backend container, scaling on request volume |
+| **AWS Amplify Hosting** | Builds and serves the React frontend from the tracked Git branch |
+| **Amazon RDS for PostgreSQL + pgvector** | Traces, vectors, audit records — single instance, single consistency model |
+| **Amazon ElastiCache for Redis** | Cache and session storage |
+| **Amazon S3** | Document storage for the RAG corpus |
+| **AWS Secrets Manager** | Holds the one standing credential the stack needs — the OpenRouter API key |
+| **IAM roles** | Every AWS-native call (RDS, S3, Secrets Manager, CloudWatch) authenticates with short-lived, automatically rotated credentials — nothing to leak through logs or environment dumps |
 
-Nothing leaves the machine. There is no region to configure and no data residency question to resolve — all processing happens on the developer's own hardware.
+See [Cloud Deployment (AWS)](cloud-deployment-aws.md) for region configuration and data residency notes.
 
 ---
 
@@ -176,15 +177,15 @@ Nothing leaves the machine. There is no region to configure and no data residenc
 
 | Mechanism | Implementation |
 |-|-|
-| **User authentication** | JWT, self-issued by the backend — no external identity provider needed |
-| **Database auth** | Local password via Docker Compose secret |
+| **User authentication** | Amazon Cognito, OAuth2 tokens validated by the backend |
+| **Database auth** | RDS IAM authentication — short-lived tokens, no stored password |
 | **Rate limiting** | Per user/IP (> 10 req/min) |
 | **Prompt injection** | Detection and audit logging |
 | **Crisis classification** | Dedicated LLM classifier |
-| **Secrets** | None required — no third-party API keys exist in this stack |
-| **CI** | GitHub Actions runs lint and tests only; no deploy target, no cloud credentials in CI |
+| **Secrets** | AWS Secrets Manager holds only the OpenRouter API key — every AWS-native credential is IAM-issued and short-lived |
+| **CI/CD** | GitHub Actions authenticates to AWS via OIDC federated credentials — no long-lived IAM access key in GitHub |
 
-Since inference, embeddings, and storage all run locally, there is no service-to-service cloud auth to manage and no API key that could leak through logs or environment dumps.
+Since AWS-native services authenticate via IAM roles, the only credential that can leak through logs or environment dumps is the OpenRouter key — and it lives in Secrets Manager, resolved at runtime rather than set in configuration.
 
 ---
 
@@ -192,14 +193,14 @@ Since inference, embeddings, and storage all run locally, there is no service-to
 
 | Layer | Technology |
 |-|-|
-| **Distributed tracing** | OpenTelemetry (console exporter, or optional local Jaeger) |
-| **Metrics** | Local structured log file / `GET /metrics` |
-| **Logging** | Structured logging |
-| **Health checks** | `/health` endpoint monitoring all connected local services |
+| **Distributed tracing** | OpenTelemetry, exported to AWS X-Ray |
+| **Metrics** | Amazon CloudWatch / `GET /metrics` |
+| **Logging** | Structured logging, shipped to CloudWatch Logs |
+| **Health checks** | `/health` endpoint monitoring all connected AWS services and the OpenRouter API |
 
-The local metrics endpoint aggregates both live interactions and the evaluation job, enabling behavior monitoring and quantitative prompt version comparison without any external monitoring service.
+CloudWatch aggregates metrics from both live interactions and the evaluation job, enabling behavior monitoring and quantitative prompt version comparison.
 
-**Capacity signal worth watching:** local GPU/VRAM throughput, not a token quota. Ollama serves one generation at a time per GPU, so the real ceiling is hardware, not billing. See [Deployment](deployment.md) for the capacity model.
+**Capacity signal worth watching:** OpenRouter's rate limit and per-token cost, not local hardware. See [Deployment](deployment.md) for the capacity model.
 
 ---
 
@@ -257,7 +258,7 @@ subtext-ai/
 │   ├── api/                             # FastAPI routes (analyze, evaluate, replay, audit, metrics, prompts, health)
 │   ├── domain/                          # Domain models (Pydantic v2)
 │   ├── application/                     # Business logic, use cases
-│   ├── infrastructure/                  # Database, Ollama client
+│   ├── infrastructure/                  # Database, OpenRouter client, AWS SDK clients
 │   ├── ai/                              # LLM integration, crisis classifier
 │   ├── rag/                             # Retrieval, RRF fusion, reranking, embeddings
 │   ├── prompts/                         # Versioned system prompts
@@ -267,7 +268,7 @@ subtext-ai/
 ├── docker/                              # Container configuration
 │   ├── Dockerfile.backend
 │   ├── Dockerfile.frontend
-│   └── docker-compose.yml
+│   └── docker-compose.yml               # Local dev services only (Postgres/Redis test doubles)
 │
 ├── scripts/                             # Indexing and evaluation utilities
 │   ├── index_documents.py
@@ -281,7 +282,7 @@ subtext-ai/
 ├── docs/                                # Project documentation
 │
 ├── .github/
-│   └── workflows/                       # GitHub Actions CI (lint + test)
+│   └── workflows/                       # GitHub Actions CI/CD (lint, test, deploy to AWS)
 │
 ├── .env.example
 ├── pyproject.toml
