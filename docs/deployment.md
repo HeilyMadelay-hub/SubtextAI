@@ -1,12 +1,14 @@
 # Deployment Guide
 
+This covers getting the application itself running against its AWS resources — environment configuration, migrations, and the dev loop. For provisioning the AWS resources themselves (App Runner, RDS, ElastiCache, S3, IAM roles) and the reasoning behind each service, see [Cloud Deployment (AWS)](cloud-deployment-aws.md).
+
 ## Prerequisites
 
 - Python 3.13+
 - Node.js 18+ and npm
-- Docker and Docker Compose
-- [Ollama](https://ollama.com) installed, with `llama3.2:3b` and `nomic-embed-text` pulled
-- A GPU with enough VRAM to run `llama3.2:3b` comfortably (4GB+ recommended); CPU-only works but is slower
+- Docker (for building the backend image)
+- An AWS account with the AWS CLI configured, and access to the provisioned RDS, ElastiCache, and S3 resources
+- An [OpenRouter](https://openrouter.ai) API key, stored in AWS Secrets Manager (see [Cloud Deployment](cloud-deployment-aws.md#authentication-iam-roles-and-the-one-exception))
 
 ---
 
@@ -19,48 +21,28 @@ cd subtextai
 
 ---
 
-## Docker Setup (local development)
+## Generation and Embeddings via OpenRouter
 
-The simplest way to run the full stack locally. Docker Compose provisions PostgreSQL with the pgvector extension and Redis alongside the application:
-
-```bash
-cp .env.example .env
-# Edit .env with your local configuration (see Environment Variables below)
-
-docker compose up --build
-# Backend  → http://localhost:8000
-# Frontend → http://localhost:5173
-```
-
-Ollama runs natively on the host (not inside Docker) so it can access the GPU directly. Make sure it is running and the required models are pulled before starting the backend:
-
-```bash
-ollama pull llama3.2:3b
-ollama pull nomic-embed-text
-ollama serve          # usually already running as a background service
-```
-
-The backend talks to Ollama over `http://localhost:11434` — no keys, no login, no cloud account.
-
----
-
-## No Cloud Authentication Required
-
-**The application makes zero calls to any external service.** There are no API keys anywhere in the codebase or configuration, because there is no third party to authenticate against — inference, embeddings, database, and cache all run on the local machine.
-
-This removes an entire category of concerns that a cloud-backed stack would otherwise need: no credential rotation, nothing to leak through logs or environment dumps, and no service-to-service auth to configure.
-
-### Backend client setup
+**The application makes no direct calls to a model provider.** Every generation and embedding call goes through OpenRouter with a single API key, resolved from Secrets Manager at startup — never stored in `.env` or source.
 
 ```python
-import ollama
+import boto3, json
+from openai import AsyncOpenAI
 
-client = ollama.AsyncClient(host="http://localhost:11434")
+def get_openrouter_key() -> str:
+    client = boto3.client("secretsmanager", region_name=settings.aws_region)
+    secret = client.get_secret_value(SecretId="subtextai/openrouter-api-key")
+    return json.loads(secret["SecretString"])["api_key"]
 
-response = await client.chat(
-    model="llama3.2:3b",
+client = AsyncOpenAI(
+    base_url="https://openrouter.ai/api/v1",
+    api_key=get_openrouter_key(),
+)
+
+response = await client.chat.completions.create(
+    model="openai/gpt-4.1",
     messages=[{"role": "user", "content": prompt}],
-    format="json",
+    response_format={"type": "json_object"},
 )
 ```
 
@@ -70,7 +52,7 @@ response = await client.chat(
 
 ### Enable the pgvector extension
 
-Inside the local PostgreSQL container:
+On RDS, the extension must be allowlisted at the parameter-group level first (see [Cloud Deployment](cloud-deployment-aws.md#database-setup-on-rds)), then created inside the database:
 
 ```sql
 CREATE EXTENSION IF NOT EXISTS vector;
@@ -105,7 +87,7 @@ alembic upgrade head
 
 ---
 
-## Manual Setup
+## Application Setup
 
 ### Backend (Python / FastAPI)
 
@@ -116,25 +98,31 @@ source .venv/bin/activate        # Windows: .venv\Scripts\activate
 pip install -r requirements.txt
 ```
 
-Create a `.env` file — note that it contains **local endpoints and configuration only, no credentials at all**:
+Create a `.env` file — note that it contains **AWS endpoints and resource identifiers, not credentials**; every credential is resolved at runtime via IAM or Secrets Manager:
 
 ```env
-# Ollama (local inference, no keys)
-OLLAMA_BASE_URL=http://localhost:11434
-OLLAMA_MODEL=llama3.2:3b
-OLLAMA_EMBEDDING_MODEL=nomic-embed-text
+# OpenRouter (key resolved from Secrets Manager, not set here)
+OPENROUTER_SECRET_ID=subtextai/openrouter-api-key
+OPENROUTER_MODEL=openai/gpt-4.1
+OPENROUTER_EMBEDDING_MODEL=text-embedding-3-large
 
-# Reranker (local cross-encoder, runs in-process via sentence-transformers)
+# Reranker (cross-encoder, runs in-process via sentence-transformers)
 RERANK_MODEL=cross-encoder/ms-marco-MiniLM-L-6-v2
 
-# Database (local Docker container)
-POSTGRES_HOST=localhost
+# Database (Amazon RDS, IAM-token-authenticated)
+POSTGRES_HOST=subtextai-db.xxxxxxxx.<region>.rds.amazonaws.com
 POSTGRES_DB=subtextai
-POSTGRES_USER=subtextai
-POSTGRES_PASSWORD=<local dev password>
+POSTGRES_USER=subtextai_api
 
-# Redis
-REDIS_URL=redis://localhost:6379/0
+# Cache (Amazon ElastiCache for Redis)
+REDIS_URL=redis://subtextai-cache.xxxxxxxx.<region>.cache.amazonaws.com:6379/0
+
+# AWS
+AWS_REGION=<region>
+
+# Auth (Amazon Cognito)
+COGNITO_USER_POOL_ID=<user-pool-id>
+COGNITO_CLIENT_ID=<app-client-id>
 
 # Policies
 MIN_WORD_COUNT=5
@@ -144,9 +132,6 @@ RATE_LIMIT_PER_MINUTE=10
 
 # Data protection
 RAW_TEXT_RETENTION_DAYS=90
-
-# Auth (self-issued JWT, no external identity provider)
-JWT_SECRET=<local dev secret>
 ```
 
 Run the backend:
@@ -157,11 +142,11 @@ uvicorn main:app --reload --port 8000
 
 ### Index documents
 
-Place source documents in `scripts/docs/` (PDF or plain text) and run the indexing script, which handles chunking, vectorization, and storage:
+Documents live in an S3 bucket (see [Cloud Deployment](cloud-deployment-aws.md)). The indexing script pulls from S3, and handles chunking, vectorization, and storage:
 
 ```bash
 cd scripts
-python index_documents.py --source ./docs
+python index_documents.py --source s3://subtextai-corpus
 ```
 
 The corpus is configurable: the script accepts any compatible collection without changes to the backend or governance logic.
@@ -179,10 +164,10 @@ cp .env.example .env.local
 Edit `.env.local`:
 
 ```env
-VITE_API_BASE_URL=http://localhost:8000/api/v1
+VITE_API_BASE_URL=https://<app-runner-service-url>/api/v1
 ```
 
-Run the frontend:
+Run the frontend against the deployed backend:
 
 ```bash
 npm run dev                      # → http://localhost:5173
@@ -190,7 +175,7 @@ npm run dev                      # → http://localhost:5173
 
 ---
 
-## Development
+## Development Loop
 
 ```bash
 # Backend (from backend/)
@@ -200,7 +185,7 @@ uvicorn main:app --reload --port 8000     # → http://localhost:8000
 npm run dev                               # → http://localhost:5173
 ```
 
-System status: `http://localhost:8000/api/v1/health`
+The dev server talks to real AWS resources (RDS, ElastiCache, OpenRouter) — there is no offline/local-only mode. System status: `http://localhost:8000/api/v1/health`.
 
 ### Running tests
 
@@ -226,30 +211,20 @@ pre-commit run --all-files
 
 ---
 
-## Continuous Integration
+## Continuous Integration and Deployment
 
 The `.github/workflows/` directory contains pipelines for:
-- Backend: lint (Ruff), test (Pytest)
-- Frontend: lint, test, build
-- Scheduled: evaluation harness run, publishing metrics to the local `/metrics` store
+- Backend: lint (Ruff), test (Pytest), build image, push to ECR, deploy to App Runner
+- Frontend: lint, test, build, deploy to Amplify
+- Scheduled: evaluation harness run, publishing metrics to CloudWatch
 
-There is no deploy step and no cloud credential in CI — the project is designed to run entirely on the developer's own machine, not to be pushed to a hosting provider.
+Workflows authenticate to AWS via **OIDC federated credentials** — no long-lived IAM access key is stored in GitHub. See [Cloud Deployment](cloud-deployment-aws.md#cicd-with-github-actions) for the full setup.
 
 ---
 
 ## Capacity Planning
 
-### Local hardware is the real ceiling
-
-There is no token quota and no per-minute billing limit — Ollama runs on your own GPU, so the constraint is hardware, not a cloud contract. The user-facing rate limit (10 req/min per user) still protects against runaway local load, but the practical ceiling is how many generations your GPU can serve concurrently.
-
-On a single consumer GPU (e.g., 4GB VRAM), Ollama effectively serves **one generation at a time** — concurrent requests queue rather than run in parallel. This is very different from a cloud deployment's token-per-minute model and should shape expectations about how many simultaneous users the local setup can realistically support.
-
-Mitigations, in order of impact:
-1. Semantic caching (see [Roadmap](roadmap.md)) — avoids the analysis call entirely on equivalent messages
-2. Trimming retrieved fragment count, which dominates prompt size and generation time
-3. Using a smaller quantized model if latency matters more than analysis depth
-4. Replacing the prompt-based crisis classifier with a lighter, fine-tuned local model
+See [Cloud Deployment — Capacity Planning](cloud-deployment-aws.md#capacity-planning-openrouter-rate-limits-are-the-real-ceiling): the constraint is OpenRouter's rate limit and per-token cost, not local hardware.
 
 ---
 
@@ -259,23 +234,24 @@ Mitigations, in order of impact:
 
 | Variable | Description |
 |-|-|
-| `OLLAMA_BASE_URL` | Local Ollama server address (default: `http://localhost:11434`) |
-| `OLLAMA_MODEL` | Generation model (default: `llama3.2:3b`) |
-| `OLLAMA_EMBEDDING_MODEL` | Embedding model (default: `nomic-embed-text`) |
+| `OPENROUTER_SECRET_ID` | Secrets Manager secret ID holding the OpenRouter API key |
+| `OPENROUTER_MODEL` | Generation model route (default: `openai/gpt-4.1`) |
+| `OPENROUTER_EMBEDDING_MODEL` | Embedding model route (default: `text-embedding-3-large`) |
 | `RERANK_MODEL` | Cross-encoder reranker identity — persisted in traces |
-| `POSTGRES_HOST` / `POSTGRES_DB` / `POSTGRES_USER` / `POSTGRES_PASSWORD` | Local database connection |
-| `REDIS_URL` | Redis connection string |
+| `POSTGRES_HOST` / `POSTGRES_DB` / `POSTGRES_USER` | RDS connection (IAM-token-authenticated, no password) |
+| `REDIS_URL` | ElastiCache for Redis connection string |
+| `AWS_REGION` | Region for all AWS SDK calls |
+| `COGNITO_USER_POOL_ID` / `COGNITO_CLIENT_ID` | Cognito user pool and app client for token validation |
 | `MIN_WORD_COUNT` | Minimum words per message (default: 5) |
 | `RERANK_SCORE_THRESHOLD_HIGH` | HIGH confidence gate (default: 0.70) |
 | `RERANK_SCORE_THRESHOLD_LOW` | Blocking threshold (default: 0.45) |
 | `RATE_LIMIT_PER_MINUTE` | Request limit per minute per user (default: 10) |
 | `RAW_TEXT_RETENTION_DAYS` | TTL before raw message text is purged (default: 90) |
-| `JWT_SECRET` | Signing secret for self-issued JWTs |
 
-No third-party API keys exist anywhere in this configuration — every value here points at something running on the local machine.
+The only secret value in this list is the OpenRouter API key, and it is never set directly — it is resolved from Secrets Manager via the backend's IAM role.
 
 ### Frontend
 
 | Variable | Description |
 |-|-|
-| `VITE_API_BASE_URL` | Backend API base URL |
+| `VITE_API_BASE_URL` | Backend API base URL (App Runner service URL) |
