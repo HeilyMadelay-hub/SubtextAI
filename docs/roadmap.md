@@ -8,7 +8,7 @@ Lines of evolution contemplated. Unless otherwise noted, they remain **outside t
 
 ### Specialized Crisis Classifier
 
-When request volume grows enough that the prompt-based call becomes a bottleneck, evaluate a fine-tuned model (DistilBERT or equivalent) to reduce latency and improve cost per classification. It would run alongside the prompt-based classifier, served through a lightweight AWS-hosted inference endpoint (e.g., SageMaker or a small container on App Runner) rather than through OpenRouter.
+When request volume grows enough that the prompt-based call becomes a bottleneck, evaluate a fine-tuned model (DistilBERT or equivalent) to reduce latency and improve cost per classification. It would run alongside the prompt-based classifier, either as one more container on the same EC2 instance if it's light enough, or on a small dedicated inference endpoint (e.g., SageMaker) if `t3.micro`'s CPU credits can't absorb it — rather than through OpenRouter.
 
 ### Multilingual Support
 
