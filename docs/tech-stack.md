@@ -16,7 +16,7 @@
 | **Framer Motion** | Animations — tension breathing, shake effects on conflict, contextual zoom in Replay Mode |
 | **Recharts** | Charts and data visualizations for insights, telemetry panel, and heatmap |
 
-Served locally via the Vite dev server (or a static build served by any local web server). Views include Analysis, Replay Mode, Live Telemetry, and Audit.
+Built as a static bundle and served in production via **AWS Amplify Hosting**. Views include Analysis, Replay Mode, Live Telemetry, and Audit.
 
 ---
 
@@ -31,7 +31,7 @@ Served locally via the Vite dev server (or a static build served by any local we
 | **Alembic** | Database schema migrations |
 | **Uvicorn** | ASGI server |
 
-Runs locally via **Uvicorn**, optionally containerized with Docker.
+Containerized with Docker and deployed to **AWS App Runner** (default) or **ECS Fargate**.
 
 ---
 
@@ -39,9 +39,9 @@ Runs locally via **Uvicorn**, optionally containerized with Docker.
 
 | Technology | Role |
 |-|-|
-| **Ollama** | Local inference server — runs `llama3.2:3b` and `nomic-embed-text` on-device, no external API |
-| **llama3.2:3b** | Crisis classification (LLM call #1) + pragmatic analysis (LLM call #2) |
-| **nomic-embed-text** | Local embedding model for document and query vectorization |
+| **OpenRouter** | Single API and billing surface for both models — no direct provider account, swapping models is a config change |
+| **gpt-4.1** (via OpenRouter) | Crisis classification (LLM call #1) + pragmatic analysis (LLM call #2) |
+| **text-embedding-3-large** (via OpenRouter) | Embedding model for document and query vectorization (3072-dim) |
 | **LangGraph** | Orchestration of the governance pipeline flow — directed graph execution with short-circuit logic |
 | **LangChain** | Selective use — only where it adds value (e.g., document loaders for indexing) |
 | **Structured Outputs** | Typed JSON responses validated by Pydantic v2 |
@@ -50,7 +50,7 @@ Two LLM calls per message:
 1. **Crisis classifier** — specialized, minimalist prompt (~150-200 tokens). Runs in parallel with retrieval, but remains strictly blocking.
 2. **Pragmatic analysis** — receives message, context, and reranked fragments with mandatory grounding.
 
-The analysis call dominates both latency and token consumption per request, so it is the correct target for any optimization work. Exact latency depends on local hardware (GPU/VRAM) — see [AI Pipeline](ai-pipeline.md) for the benchmarking note.
+The analysis call dominates both latency and token consumption per request, so it is the correct target for any optimization work. Latency depends on OpenRouter and the underlying model provider rather than local hardware — see [AI Pipeline](ai-pipeline.md) for the benchmarking note.
 
 ---
 
@@ -60,7 +60,7 @@ The analysis call dominates both latency and token consumption per request, so i
 |-|-|
 | **PostgreSQL + pgvector** | Vector storage and similarity search (HNSW index) |
 | **PostgreSQL `tsvector` + GIN** | Lexical search branch |
-| **Ollama (`nomic-embed-text`)** | Document chunk vectorization, running locally |
+| **OpenRouter (`text-embedding-3-large`)** | Document chunk vectorization |
 | **Chunking pipeline** | Document splitting for optimal retrieval |
 | **Reciprocal Rank Fusion** | Merges the vector and lexical ranked lists (`k = 60`) |
 | **Cross-encoder reranker** | Joint `(query, chunk)` scoring; produces the calibrated value that gates generation |
@@ -75,9 +75,9 @@ The corpus is configurable: any compatible document collection can be indexed wi
 
 | Technology | Role |
 |-|-|
-| **PostgreSQL (Docker container)** | Primary database — traces, prompt versions, audit records |
+| **Amazon RDS for PostgreSQL** | Primary database — traces, prompt versions, audit records |
 | **pgvector** | Vector extension for embeddings and semantic search |
-| **Redis** | Cache layer and session management |
+| **Amazon ElastiCache for Redis** | Cache layer and session management |
 
 All traces are stored with a unique `trace_id` and serve as the single source of truth for telemetry, Replay Mode, and the live panel.
 
@@ -85,13 +85,15 @@ Raw message text and derived annotations are stored in separate columns so that 
 
 ---
 
-## Local Infrastructure
+## AWS Infrastructure
 
 | Component | Role |
 |-|-|
-| **Docker Compose** | Orchestrates PostgreSQL, Redis, and optionally backend/frontend containers |
-| **Ollama** | Local inference server, run natively on the host for direct GPU access |
-| **Local filesystem** | Document storage for the RAG corpus |
+| **AWS App Runner / ECS Fargate** | Runs the FastAPI backend container |
+| **AWS Amplify Hosting** | Builds and serves the React frontend |
+| **Amazon S3** | Document storage for the RAG corpus |
+| **AWS Secrets Manager** | Holds the OpenRouter API key |
+| **IAM roles** | Authenticate every AWS-native call with short-lived, automatically rotated credentials |
 
 ---
 
@@ -99,11 +101,13 @@ Raw message text and derived annotations are stored in separate columns so that 
 
 | Technology | Role |
 |-|-|
-| **JWT** | Token-based authentication, self-issued by the backend |
+| **Amazon Cognito** | User authentication and OAuth2 token issuance |
+| **IAM roles** | Service-to-service auth for RDS, S3, Secrets Manager, CloudWatch — no standing credential |
+| **AWS Secrets Manager** | Holds the one credential IAM can't cover: the OpenRouter API key |
 | **Rate limiting** | Per user/IP request throttling |
 | **Prompt injection detection** | Pipeline-level policy check |
 
-**No standing credentials to leak.** Since inference, embeddings, database, and cache all run on the local machine, there is no third-party API key in configuration and no service-to-service cloud auth to manage. Nothing needs to be rotated because nothing is a shared secret.
+**One standing credential, tightly scoped.** Every AWS-native call authenticates via IAM role — short-lived, automatically rotated, nothing to leak. The one exception is OpenRouter, a third party outside the AWS trust boundary: its API key lives in Secrets Manager and is resolved at runtime, never stored in configuration or source.
 
 Additional security layers: rate limiting per user/IP, prompt injection detection, and emotional crisis classification — all coded in the pipeline, not in the prompt.
 
@@ -124,9 +128,9 @@ Additional security layers: rate limiting per user/IP, prompt injection detectio
 
 | Technology | Role |
 |-|-|
-| **OpenTelemetry** | Distributed tracing standard (console exporter, optional local Jaeger) |
-| **Structured Logging** | Consistent, queryable log format |
-| **Health Checks** | `/health` endpoint monitoring all connected local services |
+| **OpenTelemetry** | Distributed tracing standard, exported to AWS X-Ray |
+| **Structured Logging** | Consistent, queryable log format, shipped to CloudWatch Logs |
+| **Health Checks** | `/health` endpoint monitoring all connected AWS services and OpenRouter |
 
 ---
 
@@ -134,9 +138,10 @@ Additional security layers: rate limiting per user/IP, prompt injection detectio
 
 | Technology | Role |
 |-|-|
-| **Docker** | Container runtime |
-| **Docker Compose** | Multi-container local development |
-| **GitHub Actions** | CI pipeline — lint, test, automated evaluation (no deploy target) |
+| **Docker** | Container runtime and image build for App Runner / ECS |
+| **AWS App Runner / ECS Fargate** | Backend deployment target |
+| **AWS Amplify Hosting** | Frontend deployment target |
+| **GitHub Actions** | CI/CD pipeline — lint, test, build, deploy to AWS via OIDC federated credentials |
 | **Ruff** | Python linter and formatter (replaces flake8 + isort) |
 | **Black** | Python code formatter |
 | **Pytest** | Test framework |
