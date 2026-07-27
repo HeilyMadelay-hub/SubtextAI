@@ -4,13 +4,13 @@
 
 AI-powered communication intelligence platform that helps people understand intent, emotions, and hidden meaning behind ambiguous conversations.
 
-`Python` · `FastAPI` · `React 19` · `Ollama` · `PostgreSQL + pgvector` · `Docker`
+`Python` · `FastAPI` · `React 19` · `AWS` · `OpenRouter` · `PostgreSQL + pgvector` · `Docker`
 
 ---
 
 ## Project Status
 
-🚧 **In active development** — architecture and design complete; backend implementation (policy engine, retrieval, reranking, traceability) in progress on the local Ollama stack.
+🚧 **In active development** — architecture and design complete; backend implementation (policy engine, retrieval, reranking, traceability) in progress, targeting the production AWS deployment described below.
 
 ---
 
@@ -130,26 +130,27 @@ Suggested response
 ```
   Frontend (React 19)        Backend (FastAPI)            AI & Data
  ┌──────────────────┐    ┌──────────────────────┐    ┌──────────────────┐
- │ Local dev server │    │  Local (Docker/       │    │ Ollama           │
- │  (Vite)          │───▶│  Uvicorn)             │───▶│  llama3.2:3b     │
- │                  │REST│  Governance Pipeline  │    │  nomic-embed-text│
+ │ AWS Amplify      │    │  AWS App Runner /     │    │ OpenRouter       │
+ │  Hosting (Vite    │───▶│  ECS Fargate          │───▶│  gpt-4.1         │
+ │  static build)   │REST│  Governance Pipeline  │    │  text-embed-3-lg │
  │ TypeScript       │API │  ┌──────────────────┐ │    └──────────────────┘
  │ Tailwind CSS     │    │  │ 1. Policy        │ │    ┌──────────────────┐
- │ shadcn/ui        │    │  │ 2. Crisis ‖ RAG  │ │    │ PostgreSQL       │
- │ Recharts         │    │  │ 3. Rerank + gate │ │───▶│  + pgvector      │
- │ Framer Motion    │    │  │ 4. Analysis      │ │    │  HNSW + GIN      │
- └──────────────────┘    │  │ 5. Trace         │ │    └──────────────────┘
-                         │  └──────────────────┘ │    ┌──────────────────┐
-                         │  LangGraph            │    │ Redis            │
-                         │  No API keys, no cloud│    │  (cache/sessions)│
+ │ shadcn/ui        │    │  │ 2. Crisis ‖ RAG  │ │    │ Amazon RDS       │
+ │ Recharts         │    │  │ 3. Rerank + gate │ │───▶│  PostgreSQL      │
+ │ Framer Motion    │    │  │ 4. Analysis      │ │    │  + pgvector      │
+ └──────────────────┘    │  │ 5. Trace         │ │    │  HNSW + GIN      │
+                         │  └──────────────────┘ │    └──────────────────┘
+                         │  LangGraph            │    ┌──────────────────┐
+                         │  IAM roles + Secrets  │    │ ElastiCache      │
+                         │  Manager (OpenRouter  │    │  for Redis       │
+                         │  key only)            │    │  (cache/sessions)│
                          └───────────────────────┘    └──────────────────┘
                                    │
                                    ▼
-                          Local structured logs + OpenTelemetry
-                          (console exporter)
+                          CloudWatch + AWS X-Ray + OpenTelemetry
 ```
 
-Everything above runs on your machine — no cloud account, no API keys, no data leaving the device. Steps 2a (crisis detection) and 2b (retrieval) run concurrently — crisis checking stays strictly blocking, but leaves the critical path of a successful request. The confidence gate at step 3 reads a calibrated cross-encoder score, so generation is blocked whenever no solid evidence was found.
+Everything above runs on AWS. Steps 2a (crisis detection) and 2b (retrieval) run concurrently — crisis checking stays strictly blocking, but leaves the critical path of a successful request. The confidence gate at step 3 reads a calibrated cross-encoder score, so generation is blocked whenever no solid evidence was found.
 
 > Full architecture documentation in [docs/architecture.md](docs/architecture.md)
 
@@ -161,64 +162,63 @@ Everything above runs on your machine — no cloud account, no API keys, no data
 |-|-|
 | **Frontend** | React 19, TypeScript, Vite, Tailwind CSS, shadcn/ui, Recharts, Framer Motion |
 | **Backend** | Python 3.13, FastAPI, Pydantic v2, SQLAlchemy 2.0, Alembic |
-| **AI** | Ollama (`llama3.2:3b`, `nomic-embed-text`), LangGraph, Structured Outputs |
+| **AI** | OpenRouter (`gpt-4.1`, `text-embedding-3-large`), LangGraph, Structured Outputs |
 | **RAG** | PostgreSQL + pgvector (HNSW), lexical search, RRF fusion, cross-encoder reranking |
-| **Data** | PostgreSQL + pgvector (Docker), Redis |
-| **Security** | JWT (self-issued), rate limiting, prompt injection detection |
-| **Observability** | OpenTelemetry, structured logging |
-| **DevOps** | Docker, Docker Compose, GitHub Actions (lint + test), Ruff, Pytest |
+| **Data** | Amazon RDS for PostgreSQL + pgvector, Amazon ElastiCache for Redis |
+| **Security** | Amazon Cognito (OAuth2 + IAM), rate limiting, prompt injection detection |
+| **Observability** | Amazon CloudWatch, AWS X-Ray, OpenTelemetry |
+| **DevOps** | Docker, AWS App Runner / ECS Fargate, AWS Amplify Hosting, GitHub Actions (OIDC to AWS), Ruff, Pytest |
 
 > Detail and rationale in [docs/tech-stack.md](docs/tech-stack.md)
 
 ---
 
-## Quick Start
+## Deployment
+
+SubtextAI deploys to AWS: **App Runner** (backend) or **ECS Fargate**, **Amplify Hosting** (frontend), **RDS for PostgreSQL + pgvector**, **ElastiCache for Redis**, **S3** for the document corpus, and **OpenRouter** for generation (`gpt-4.1`) and embeddings (`text-embedding-3-large`).
 
 ### Prerequisites
 
 * Python 3.13+
 * Node.js 18+ and npm
-* Docker and Docker Compose
-* [Ollama](https://ollama.com) installed, with `llama3.2:3b` and `nomic-embed-text` pulled
+* Docker (for building the backend image)
+* An AWS account with the AWS CLI configured
+* An [OpenRouter](https://openrouter.ai) API key
 
-### With Docker (recommended)
+### Build and push the backend image
 
 ```bash
 git clone https://github.com/<your-user>/subtextai.git
 cd subtextai
 
-ollama pull llama3.2:3b
-ollama pull nomic-embed-text
-
-cp .env.example .env        # Local endpoints and configuration only — no keys
-
-docker compose up --build
-# Backend  → http://localhost:8000
-# Frontend → http://localhost:5173
+docker build -f docker/Dockerfile.backend -t subtextai-api .
+aws ecr get-login-password --region <region> | docker login --username AWS --password-stdin <account-id>.dkr.ecr.<region>.amazonaws.com
+docker tag subtextai-api <account-id>.dkr.ecr.<region>.amazonaws.com/subtextai-api
+docker push <account-id>.dkr.ecr.<region>.amazonaws.com/subtextai-api
 ```
 
-> The application stores **no API keys** and makes **no calls to any external service**. Everything — model inference, embeddings, database, cache — runs on your machine via Ollama and Docker.
-
-### Manual setup
+### Store the OpenRouter key and run migrations
 
 ```bash
-# Backend
-cd backend
-python -m venv .venv
-source .venv/bin/activate        # Windows: .venv\Scripts\activate
-pip install -r requirements.txt
-alembic upgrade head
-uvicorn main:app --reload --port 8000
+aws secretsmanager create-secret \
+  --name subtextai/openrouter-api-key \
+  --secret-string '{"api_key":"<your-openrouter-key>"}'
 
-# Frontend (separate terminal)
-cd frontend
-npm install
-cp .env.example .env.local
-# Edit .env.local → VITE_API_BASE_URL=http://localhost:8000/api/v1
-npm run dev                      # → http://localhost:5173
+cd backend
+alembic upgrade head        # run against the RDS endpoint
 ```
 
-> Full installation and deployment guide in [docs/deployment.md](docs/deployment.md)
+### Deploy backend and frontend
+
+```bash
+aws apprunner create-service --service-name subtextai-api --source-configuration '...'
+
+cd frontend
+npm run build
+aws amplify start-deployment --app-id <app-id> --branch-name main
+```
+
+> Full infrastructure setup, IAM policies, and env vars in [docs/cloud-deployment-aws.md](docs/cloud-deployment-aws.md) and [docs/deployment.md](docs/deployment.md)
 
 ---
 
@@ -233,7 +233,7 @@ npm run dev                      # → http://localhost:5173
 - [API Reference](docs/api-reference.md)
 - [Screenshots](docs/screenshots.md)
 - [Roadmap](docs/roadmap.md)
-- [Cloud Deployment (Azure, optional/paid)](docs/cloud-deployment-azure.md)
+- [Cloud Deployment (AWS)](docs/cloud-deployment-aws.md)
 
 ---
 
@@ -245,7 +245,7 @@ Become the communication intelligence platform for personal and enterprise conve
 
 | Phase | Description |
 |-|-|
-| **Current** | Architecture and governance pipeline fully designed; backend implementation (policy engine, retrieval, reranking, traceability) in progress on the local Ollama stack |
+| **Current** | Architecture and governance pipeline fully designed; backend implementation (policy engine, retrieval, reranking, traceability) in progress, targeting production on AWS |
 | **Next** | Specialized crisis classifier, multilingual support, semantic cache, audit panel |
 | **Future** | Real-time streaming analysis, predictive trajectory engine |
 
