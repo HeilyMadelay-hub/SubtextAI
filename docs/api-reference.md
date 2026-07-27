@@ -1,6 +1,6 @@
 # API Reference
 
-**Base URL (production):** `https://<app-runner-service-url>/api/v1`
+**Base URL (production):** `https://<ec2-instance-domain>/api/v1` (through the Nginx reverse proxy)
 **Base URL (dev, pointed at AWS resources):** `http://localhost:8000/api/v1`
 
 Built with **FastAPI** (Python 3.13). Interactive API docs available at `/docs` (Swagger UI) and `/redoc` (ReDoc).
@@ -227,7 +227,7 @@ Prompt version history with per-version metrics. Enables before/after comparison
 
 ## GET /health
 
-System status and each connected service (OpenRouter, RDS PostgreSQL + pgvector, ElastiCache for Redis).
+System status and each connected service (OpenRouter, the local PostgreSQL + pgvector container, the local Redis container).
 
 ---
 
@@ -235,7 +235,7 @@ System status and each connected service (OpenRouter, RDS PostgreSQL + pgvector,
 
 API requests require a valid **OAuth2 access token** issued by **Amazon Cognito**. The backend validates the token's signature and claims on every request rather than issuing its own — Cognito owns the user pool, sign-up/sign-in flows, and MFA.
 
-Calls between the backend and RDS, ElastiCache, S3, and CloudWatch authenticate via the backend's **IAM role** — short-lived credentials, nothing stored in configuration. The one exception is OpenRouter, which sits outside AWS's IAM boundary: its API key is resolved from **Secrets Manager** at startup rather than passed as a request-time credential.
+Calls between the backend and S3 and CloudWatch authenticate via the EC2 instance's **IAM instance profile** — short-lived credentials, nothing stored in configuration. Postgres and Redis need no such scheme: they run as Docker containers on the same instance, reachable only over the internal Docker network, never on a public port. The one exception is OpenRouter, which sits outside AWS's IAM boundary: its API key is resolved from **Secrets Manager** at startup rather than passed as a request-time credential.
 
 ---
 
