@@ -4,8 +4,8 @@
 
 - Python 3.13+
 - Node.js 18+ and npm
-- Docker and Docker Compose
-- [Ollama](https://ollama.com) installed, with `llama3.2:3b` and `nomic-embed-text` pulled
+- Docker
+- An AWS account with the AWS CLI configured, and an [OpenRouter](https://openrouter.ai) API key
 
 ## Setup
 
