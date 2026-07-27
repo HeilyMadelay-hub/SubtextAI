@@ -101,9 +101,11 @@ The system processes **private conversations**, which under GDPR may constitute 
 | **Split storage** | Raw message text and derived annotations are stored in separate columns. Annotations, scores, policy decisions, and model versions are the audit record; the raw text is the personal data. |
 | **Text-level erasure** | An erasure request nulls the raw text while preserving the annotation layer. The audit trail stays intact and reconstructible; Replay Mode continues to work with the text redacted. |
 | **Retention TTL** | Raw message text carries a configurable TTL (default 90 days) after which it is purged automatically. Annotations persist. |
-| **Local-only processing** | Every model call — crisis classification, embeddings, pragmatic analysis — runs locally via Ollama. No message content is ever transmitted to a third party, so there is no data residency question and no training-data usage to resolve. |
+| **Minimized third-party exposure** | Every model call — crisis classification, embeddings, pragmatic analysis — is transmitted to OpenRouter, which forwards it to the underlying model provider. This is a real data-residency and training-data question, not an avoided one: it must be resolved per provider (see [Cloud Deployment — Data Residency](cloud-deployment-aws.md#data-residency-and-compliance-notes)), not assumed away. What *is* still minimized: raw text never touches long-term storage outside the pipeline's own retention TTL, and no message content is logged by any AWS service beyond what the pipeline itself writes to the trace record. |
 
 The design goal is that an audit remains fully reconstructible at the level of *decisions* even after the *content* that triggered them has been erased.
+
+> **This is a real trade-off, not a footnote.** The earlier local-only design guaranteed zero third-party transmission by construction — no message ever left the machine. Moving generation and embeddings to OpenRouter trades that guarantee for a contractual one: no-training and data-handling commitments that vary by the specific model in use and must be verified, not assumed, before processing conversations that qualify as special-category data under GDPR.
 
 ---
 
