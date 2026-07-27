@@ -31,7 +31,7 @@ Built as a static bundle and served in production via **AWS Amplify Hosting**. V
 | **Alembic** | Database schema migrations |
 | **Uvicorn** | ASGI server |
 
-Containerized with Docker and deployed to **AWS App Runner** (default) or **ECS Fargate**.
+Containerized with Docker and deployed to a single **Amazon EC2** `t3.micro` instance (AWS Free Tier), fronted by an **Nginx** reverse proxy on the same box.
 
 ---
 
@@ -75,9 +75,9 @@ The corpus is configurable: any compatible document collection can be indexed wi
 
 | Technology | Role |
 |-|-|
-| **Amazon RDS for PostgreSQL** | Primary database — traces, prompt versions, audit records |
+| **PostgreSQL (Docker container, EC2)** | Primary database — traces, prompt versions, audit records |
 | **pgvector** | Vector extension for embeddings and semantic search |
-| **Amazon ElastiCache for Redis** | Cache layer and session management |
+| **Redis (Docker container, EC2)** | Cache layer and session management |
 
 All traces are stored with a unique `trace_id` and serve as the single source of truth for telemetry, Replay Mode, and the live panel.
 
@@ -89,11 +89,13 @@ Raw message text and derived annotations are stored in separate columns so that 
 
 | Component | Role |
 |-|-|
-| **AWS App Runner / ECS Fargate** | Runs the FastAPI backend container |
+| **Amazon EC2 (`t3.micro`, Free Tier)** | Runs the FastAPI backend, PostgreSQL, Redis, and Nginx as Docker containers |
+| **Nginx** | Reverse proxy on the instance — TLS termination and routing to FastAPI |
+| **Amazon ECR** | Stores the backend's built Docker images |
 | **AWS Amplify Hosting** | Builds and serves the React frontend |
-| **Amazon S3** | Document storage for the RAG corpus |
+| **Amazon S3** | Document storage for the RAG corpus, plus scheduled database backups |
 | **AWS Secrets Manager** | Holds the OpenRouter API key |
-| **IAM roles** | Authenticate every AWS-native call with short-lived, automatically rotated credentials |
+| **IAM instance profile** | Authenticates every AWS-native call from the EC2 instance with short-lived, automatically rotated credentials |
 
 ---
 
@@ -102,12 +104,13 @@ Raw message text and derived annotations are stored in separate columns so that 
 | Technology | Role |
 |-|-|
 | **Amazon Cognito** | User authentication and OAuth2 token issuance |
-| **IAM roles** | Service-to-service auth for RDS, S3, Secrets Manager, CloudWatch — no standing credential |
+| **IAM instance profile** | Service-to-service auth for S3, Secrets Manager, CloudWatch — no standing credential |
 | **AWS Secrets Manager** | Holds the one credential IAM can't cover: the OpenRouter API key |
+| **Docker internal network** | Postgres and Redis are reachable only from other containers on the same instance — never exposed on a public port |
 | **Rate limiting** | Per user/IP request throttling |
 | **Prompt injection detection** | Pipeline-level policy check |
 
-**One standing credential, tightly scoped.** Every AWS-native call authenticates via IAM role — short-lived, automatically rotated, nothing to leak. The one exception is OpenRouter, a third party outside the AWS trust boundary: its API key lives in Secrets Manager and is resolved at runtime, never stored in configuration or source.
+**One standing credential, tightly scoped.** Every AWS-native call authenticates via the EC2 instance's IAM role — short-lived, automatically rotated, nothing to leak. The one exception is OpenRouter, a third party outside the AWS trust boundary: its API key lives in Secrets Manager and is resolved at runtime, never stored in configuration or source.
 
 Additional security layers: rate limiting per user/IP, prompt injection detection, and emotional crisis classification — all coded in the pipeline, not in the prompt.
 
@@ -138,8 +141,10 @@ Additional security layers: rate limiting per user/IP, prompt injection detectio
 
 | Technology | Role |
 |-|-|
-| **Docker** | Container runtime and image build for App Runner / ECS |
-| **AWS App Runner / ECS Fargate** | Backend deployment target |
+| **Docker** | Container runtime — FastAPI, PostgreSQL, Redis, and Nginx all run as containers |
+| **Docker Compose** | Orchestrates the four containers on the EC2 instance |
+| **Amazon EC2 (`t3.micro`, Free Tier)** | Backend deployment target |
+| **Amazon ECR** | Registry for the backend's built images |
 | **AWS Amplify Hosting** | Frontend deployment target |
 | **GitHub Actions** | CI/CD pipeline — lint, test, build, deploy to AWS via OIDC federated credentials |
 | **Ruff** | Python linter and formatter (replaces flake8 + isort) |
