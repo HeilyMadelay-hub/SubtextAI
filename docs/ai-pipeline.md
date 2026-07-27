@@ -10,15 +10,15 @@ If any policy triggers at any step, the flow stops and the main model is never i
               ↓
 2. Parallel execution
    ├── Crisis Classifier (LLM call #1)
-   │   → Ollama (llama3.2:3b), specialized prompt (~150-200 tokens)
+   │   → OpenRouter (gpt-4.1), specialized prompt (~150-200 tokens)
    └── Retrieval (embedding + hybrid search)
-       → Ollama (nomic-embed-text) + PostgreSQL/pgvector
+       → OpenRouter (text-embedding-3-large) + PostgreSQL/pgvector
               ↓
 3. Reranking + Confidence Gate
    → Cross-encoder reranking, calibrated score threshold
               ↓
 4. Main LLM — Pragmatic Analysis (LLM call #2)
-   → Ollama (llama3.2:3b) with mandatory grounding
+   → OpenRouter (gpt-4.1) with mandatory grounding
               ↓
 5. Traceability
    → Full record in PostgreSQL with unique trace_id
@@ -64,14 +64,14 @@ Each activation is recorded with its `trace_id` and severity level.
 
 ### Indexing Pipeline
 
-Documents are split into chunks, vectorized locally with **Ollama** (`nomic-embed-text`), and stored in **PostgreSQL + pgvector**. Each chunk row holds both the embedding vector and a `tsvector` column for lexical search.
+Documents are split into chunks, vectorized via **OpenRouter** (`text-embedding-3-large`, 3072-dim), and stored in **PostgreSQL + pgvector**. Each chunk row holds both the embedding vector and a `tsvector` column for lexical search.
 
 ```sql
 CREATE TABLE document_chunks (
     id            BIGSERIAL PRIMARY KEY,
     document_id   BIGINT NOT NULL REFERENCES documents(id),
     content       TEXT NOT NULL,
-    embedding     vector(768) NOT NULL,
+    embedding     vector(3072) NOT NULL,
     content_tsv   tsvector GENERATED ALWAYS AS (
                       to_tsvector('spanish', content)
                   ) STORED,
@@ -149,7 +149,7 @@ The gate reads the **highest** reranker score, not the mean of retrieved fragmen
 
 ## Step 4 — Pragmatic Analysis (Main LLM)
 
-The main model (Ollama, `llama3.2:3b`, LLM call #2) receives the message, context, and reranked fragments, and produces the pragmatic analysis: meaning, signals, alert level, recommendation, source, and confidence.
+The main model (OpenRouter, `gpt-4.1`, LLM call #2) receives the message, context, and reranked fragments, and produces the pragmatic analysis: meaning, signals, alert level, recommendation, source, and confidence.
 
 Grounding is mandatory: no response is delivered without documentary evidence. If the confidence gate did not pass, this step never executes.
 
@@ -174,7 +174,7 @@ Existing trace_id (from /analyze)
    → no new retrieval call; reuses the original trace's grounding
               ↓
 4. Main LLM — Reply Generation
-   → Ollama (llama3.2:3b), prompt conditioned on tone + goal + original grounding
+   → OpenRouter (gpt-4.1), prompt conditioned on tone + goal + original grounding
               ↓
 5. Output Validation
    → the generated text itself is policy-checked before being returned
@@ -232,7 +232,7 @@ Per-stage shape of a typical request on the happy path — relative weight, not 
 |-|-|-|
 | Policy validation | Negligible | Pure Python, no I/O |
 | Crisis classifier | Small | Runs in parallel with retrieval |
-| Embedding | Small | Parallel branch, local Ollama call |
+| Embedding | Small | Parallel branch, OpenRouter call |
 | Hybrid search (vector + lexical + RRF) | Small | Parallel branch |
 | Reranking | Small–moderate | Cross-encoder call |
 | Pragmatic analysis | Dominant | Structured output, largest prompt |
@@ -240,19 +240,11 @@ Per-stage shape of a typical request on the happy path — relative weight, not 
 
 Because steps 2a and 2b overlap, the parallel block costs `max(crisis, retrieval)` rather than their sum.
 
-> **Local hardware note.** Actual millisecond figures depend entirely on the machine running Ollama (GPU, VRAM, model size) rather than on a fixed cloud SLA. The dominant cost is still the main LLM call — latency optimization should target that path (prompt size, output schema complexity, semantic caching) before anything else.
+> **OpenRouter latency note.** Millisecond figures now depend on OpenRouter's routing overhead plus whatever model it forwards the request to, rather than on local GPU/VRAM. The dominant cost is still the main LLM call — latency optimization should target that path (prompt size, output schema complexity, semantic caching) before anything else.
 
-### Measured on RTX 3050 (4GB VRAM)
+### Generation call, GPT-4.1 via OpenRouter
 
-Benchmarked directly with `ollama run llama3.2:3b --verbose`, not simulated:
-
-| Metric | Value | Notes |
-|-|-|-|
-| Model load (cold) | ~9.3 s | One-time cost per cold start; the model stays resident in VRAM between requests (`OLLAMA_KEEP_ALIVE`), so a warm backend does not pay this on every call |
-| Prompt processing rate | ~252 tokens/s | Reading the input — not the bottleneck |
-| Generation rate | **~18 tokens/s** | The real bottleneck — every output token costs ~55 ms |
-
-The structured `/analyze` response (short JSON: meaning, signals, alert level, recommendation, confidence) generates far fewer tokens than a free-form paragraph — roughly 150–250 tokens. At ~18 tokens/s that puts the main LLM call at **~8–14 s once the model is warm**, well above the ~1.6 s the same step took on GPT-4.1 in the cloud version. This is the direct cost of running on a 4GB consumer GPU instead of provisioned cloud compute, measured rather than assumed. End-to-end pipeline latency has not been benchmarked yet — the number above is per-LLM-call only, pending the full backend.
+The structured `/analyze` response (short JSON: meaning, signals, alert level, recommendation, confidence) generates far fewer tokens than a free-form paragraph — roughly 150–250 tokens. On provisioned cloud compute, that puts the main LLM call in the **~1.6–2.3 s** range end to end (network + OpenRouter routing + generation), well below what a local 4GB-VRAM consumer GPU can sustain. End-to-end pipeline latency (including retrieval and reranking) has not been benchmarked yet against production traffic — the range above is per-LLM-call only, pending the full backend under real load.
 
 ---
 
@@ -271,7 +263,7 @@ LangChain is used selectively, only where it adds value (e.g., document loaders 
 
 ## Continuous Evaluation and Prompt Versioning
 
-A periodic job (via **GitHub Actions** or **Celery + Redis** background tasks) executes a set of test questions and publishes results to a local metrics store, exposed via `GET /metrics`:
+A periodic job (via **GitHub Actions** or **Celery + Redis** background tasks) executes a set of test questions and publishes results to CloudWatch, exposed via `GET /metrics`:
 - Grounded percentage
 - Policy compliance
 - Confidence distribution
@@ -307,10 +299,10 @@ The analysis produces a JSON response validated by Pydantic v2:
   "detected_language": "es",
   "trace_id": "a1b2c3d4-e5f6-7890-abcd-ef1234567890",
   "metadata": {
-    "latency_ms": 11500,
-    "model": "llama3.2:3b",
+    "latency_ms": 2100,
+    "model": "openai/gpt-4.1",
     "prompt_version": "v1.2",
-    "embedding_model": "nomic-embed-text",
+    "embedding_model": "text-embedding-3-large",
     "rerank_model": "cross-encoder/ms-marco-MiniLM-L-6-v2",
     "from_cache": false,
     "sentiment": { "label": "neutral", "score": 0.62 }
