@@ -1,6 +1,7 @@
 # API Reference
 
-**Base URL:** `http://localhost:8000/api/v1`
+**Base URL (production):** `https://<app-runner-service-url>/api/v1`
+**Base URL (dev, pointed at AWS resources):** `http://localhost:8000/api/v1`
 
 Built with **FastAPI** (Python 3.13). Interactive API docs available at `/docs` (Swagger UI) and `/redoc` (ReDoc).
 
@@ -18,7 +19,7 @@ Built with **FastAPI** (Python 3.13). Interactive API docs available at `/docs` 
 | `DELETE` | `/messages/{trace_id}/content` | Erases raw message text, preserving the audit trail |
 | `GET` | `/metrics` | Aggregated system quality metrics (last 7 days) |
 | `GET` | `/prompts` | Prompt version history with comparative metrics |
-| `GET` | `/health` | System status and connected local services |
+| `GET` | `/health` | System status and connected AWS services |
 
 ---
 
@@ -57,9 +58,9 @@ Receives a message and context, passes it through the complete governance pipeli
   "trace_id": "a1b2c3d4-e5f6-7890-abcd-ef1234567890",
   "metadata": {
     "latency_ms": 2310,
-    "model": "llama3.2:3b",
+    "model": "openai/gpt-4.1",
     "prompt_version": "v1.2",
-    "embedding_model": "nomic-embed-text",
+    "embedding_model": "text-embedding-3-large",
     "rerank_model": "cross-encoder/ms-marco-MiniLM-L-6-v2",
     "from_cache": false,
     "sentiment": { "label": "neutral", "score": 0.62 }
@@ -69,7 +70,7 @@ Receives a message and context, passes it through the complete governance pipeli
 
 The confidence level is derived from the **top cross-encoder reranker score**, not from raw similarity or the RRF fusion score. See [AI Pipeline](ai-pipeline.md) for the rationale.
 
-Latency is dominated by the main model call and depends on local hardware (GPU/VRAM) running Ollama — see [AI Pipeline](ai-pipeline.md) for the benchmarking note.
+Latency is dominated by the main model call and depends on OpenRouter's routing overhead plus the underlying model provider — see [AI Pipeline](ai-pipeline.md) for the benchmarking note.
 
 ### Error Codes
 
@@ -82,7 +83,7 @@ Latency is dominated by the main model call and depends on local hardware (GPU/V
 | `400` | `prompt_injection` | Malicious input detected and blocked |
 | `429` | `user_rate_limit` | More than 10 requests per minute per user/IP |
 
-> A `429` may also originate when Ollama is still processing a previous request — a single local GPU serves one generation at a time. The response distinguishes the two cases via `applied_policy`.
+> A `429` may also originate from OpenRouter itself if its per-key rate limit is hit under concurrent load. The response distinguishes the two cases via `applied_policy`.
 
 ### Crisis Response
 
@@ -226,15 +227,15 @@ Prompt version history with per-version metrics. Enables before/after comparison
 
 ## GET /health
 
-System status and each connected local service (Ollama, PostgreSQL, pgvector, Redis).
+System status and each connected service (OpenRouter, RDS PostgreSQL + pgvector, ElastiCache for Redis).
 
 ---
 
 ## Authentication
 
-API requests require a valid **JWT token**, issued and validated by the backend itself at login. Since the entire system runs locally, there is no external identity provider — no OAuth2 flow, no cloud tenant to configure.
+API requests require a valid **OAuth2 access token** issued by **Amazon Cognito**. The backend validates the token's signature and claims on every request rather than issuing its own — Cognito owns the user pool, sign-up/sign-in flows, and MFA.
 
-Calls between the backend and its local services (Ollama, PostgreSQL, Redis) need no authentication scheme at all — they run on the same machine. No API keys are stored in configuration.
+Calls between the backend and RDS, ElastiCache, S3, and CloudWatch authenticate via the backend's **IAM role** — short-lived credentials, nothing stored in configuration. The one exception is OpenRouter, which sits outside AWS's IAM boundary: its API key is resolved from **Secrets Manager** at startup rather than passed as a request-time credential.
 
 ---
 
