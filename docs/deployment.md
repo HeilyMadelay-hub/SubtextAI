@@ -1,14 +1,14 @@
 # Deployment Guide
 
-This covers getting the application itself running against its AWS resources — environment configuration, migrations, and the dev loop. For provisioning the AWS resources themselves (App Runner, RDS, ElastiCache, S3, IAM roles) and the reasoning behind each service, see [Cloud Deployment (AWS)](cloud-deployment-aws.md).
+This covers getting the application itself running against its AWS resources — environment configuration, migrations, and the dev loop. For provisioning the AWS resources themselves (the EC2 instance, IAM instance profile, S3, Secrets Manager) and the reasoning behind each service, see [Cloud Deployment (AWS)](cloud-deployment-aws.md).
 
 ## Prerequisites
 
 - Python 3.13+
 - Node.js 18+ and npm
-- Docker (for building the backend image)
-- An AWS account with the AWS CLI configured, and access to the provisioned RDS, ElastiCache, and S3 resources
-- An [OpenRouter](https://openrouter.ai) API key, stored in AWS Secrets Manager (see [Cloud Deployment](cloud-deployment-aws.md#authentication-iam-roles-and-the-one-exception))
+- Docker and Docker Compose (for building the backend image and running Postgres/Redis alongside it)
+- An AWS account with the AWS CLI configured, an EC2 key pair, and access to the provisioned S3 bucket
+- An [OpenRouter](https://openrouter.ai) API key, stored in AWS Secrets Manager (see [Cloud Deployment](cloud-deployment-aws.md#authentication-iam-instance-profile-and-the-one-exception))
 
 ---
 
@@ -52,7 +52,7 @@ response = await client.chat.completions.create(
 
 ### Enable the pgvector extension
 
-On RDS, the extension must be allowlisted at the parameter-group level first (see [Cloud Deployment](cloud-deployment-aws.md#database-setup-on-rds)), then created inside the database:
+Postgres runs as a Docker container (`pgvector/pgvector:pg16`) on the EC2 instance, which already ships the extension — no parameter group to configure, unlike a managed instance (see [Cloud Deployment](cloud-deployment-aws.md#database-setup-on-docker)). Just create it inside the database:
 
 ```sql
 CREATE EXTENSION IF NOT EXISTS vector;
@@ -109,13 +109,13 @@ OPENROUTER_EMBEDDING_MODEL=text-embedding-3-large
 # Reranker (cross-encoder, runs in-process via sentence-transformers)
 RERANK_MODEL=cross-encoder/ms-marco-MiniLM-L-6-v2
 
-# Database (Amazon RDS, IAM-token-authenticated)
-POSTGRES_HOST=subtextai-db.xxxxxxxx.<region>.rds.amazonaws.com
+# Database (PostgreSQL, Docker container on the same EC2 instance)
+POSTGRES_HOST=postgres          # Docker Compose service name — internal network only
 POSTGRES_DB=subtextai
 POSTGRES_USER=subtextai_api
 
-# Cache (Amazon ElastiCache for Redis)
-REDIS_URL=redis://subtextai-cache.xxxxxxxx.<region>.cache.amazonaws.com:6379/0
+# Cache (Redis, Docker container on the same EC2 instance)
+REDIS_URL=redis://redis:6379/0  # Docker Compose service name — internal network only
 
 # AWS
 AWS_REGION=<region>
@@ -164,7 +164,7 @@ cp .env.example .env.local
 Edit `.env.local`:
 
 ```env
-VITE_API_BASE_URL=https://<app-runner-service-url>/api/v1
+VITE_API_BASE_URL=https://<ec2-instance-domain>/api/v1
 ```
 
 Run the frontend against the deployed backend:
@@ -185,7 +185,7 @@ uvicorn main:app --reload --port 8000     # → http://localhost:8000
 npm run dev                               # → http://localhost:5173
 ```
 
-The dev server talks to real AWS resources (RDS, ElastiCache, OpenRouter) — there is no offline/local-only mode. System status: `http://localhost:8000/api/v1/health`.
+The dev server talks to real AWS resources and to Postgres/Redis containers (either run locally with `docker compose up postgres redis` for a dev loop, or against the production EC2 containers over an SSH tunnel) — there is no offline/local-only mode. System status: `http://localhost:8000/api/v1/health`.
 
 ### Running tests
 
@@ -214,7 +214,7 @@ pre-commit run --all-files
 ## Continuous Integration and Deployment
 
 The `.github/workflows/` directory contains pipelines for:
-- Backend: lint (Ruff), test (Pytest), build image, push to ECR, deploy to App Runner
+- Backend: lint (Ruff), test (Pytest), build image, push to ECR, SSH into the EC2 instance to pull the new image and `docker compose up -d`
 - Frontend: lint, test, build, deploy to Amplify
 - Scheduled: evaluation harness run, publishing metrics to CloudWatch
 
@@ -224,7 +224,7 @@ Workflows authenticate to AWS via **OIDC federated credentials** — no long-liv
 
 ## Capacity Planning
 
-See [Cloud Deployment — Capacity Planning](cloud-deployment-aws.md#capacity-planning-openrouter-rate-limits-are-the-real-ceiling): the constraint is OpenRouter's rate limit and per-token cost, not local hardware.
+See [Cloud Deployment — Capacity Planning](cloud-deployment-aws.md#capacity-planning-two-ceilings-now-not-one): OpenRouter's rate limit and per-token cost is one constraint, and `t3.micro`'s CPU credits and 1GB RAM — now shared across FastAPI, Postgres, Redis, and Nginx on the same instance — is the other.
 
 ---
 
@@ -238,8 +238,8 @@ See [Cloud Deployment — Capacity Planning](cloud-deployment-aws.md#capacity-pl
 | `OPENROUTER_MODEL` | Generation model route (default: `openai/gpt-4.1`) |
 | `OPENROUTER_EMBEDDING_MODEL` | Embedding model route (default: `text-embedding-3-large`) |
 | `RERANK_MODEL` | Cross-encoder reranker identity — persisted in traces |
-| `POSTGRES_HOST` / `POSTGRES_DB` / `POSTGRES_USER` | RDS connection (IAM-token-authenticated, no password) |
-| `REDIS_URL` | ElastiCache for Redis connection string |
+| `POSTGRES_HOST` / `POSTGRES_DB` / `POSTGRES_USER` | Connection to the local Postgres container (Docker Compose service name, internal network only) |
+| `REDIS_URL` | Connection to the local Redis container (Docker Compose service name, internal network only) |
 | `AWS_REGION` | Region for all AWS SDK calls |
 | `COGNITO_USER_POOL_ID` / `COGNITO_CLIENT_ID` | Cognito user pool and app client for token validation |
 | `MIN_WORD_COUNT` | Minimum words per message (default: 5) |
@@ -254,4 +254,4 @@ The only secret value in this list is the OpenRouter API key, and it is never se
 
 | Variable | Description |
 |-|-|
-| `VITE_API_BASE_URL` | Backend API base URL (App Runner service URL) |
+| `VITE_API_BASE_URL` | Backend API base URL (EC2 instance domain, through Nginx) |
