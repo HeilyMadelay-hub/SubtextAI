@@ -128,29 +128,38 @@ Suggested response
 ## Architecture
 
 ```
-  Frontend (React 19)        Backend (FastAPI)            AI & Data
- ┌──────────────────┐    ┌──────────────────────┐    ┌──────────────────┐
- │ AWS Amplify      │    │  AWS App Runner /     │    │ OpenRouter       │
- │  Hosting (Vite    │───▶│  ECS Fargate          │───▶│  gpt-4.1         │
- │  static build)   │REST│  Governance Pipeline  │    │  text-embed-3-lg │
- │ TypeScript       │API │  ┌──────────────────┐ │    └──────────────────┘
- │ Tailwind CSS     │    │  │ 1. Policy        │ │    ┌──────────────────┐
- │ shadcn/ui        │    │  │ 2. Crisis ‖ RAG  │ │    │ Amazon RDS       │
- │ Recharts         │    │  │ 3. Rerank + gate │ │───▶│  PostgreSQL      │
- │ Framer Motion    │    │  │ 4. Analysis      │ │    │  + pgvector      │
- └──────────────────┘    │  │ 5. Trace         │ │    │  HNSW + GIN      │
-                         │  └──────────────────┘ │    └──────────────────┘
-                         │  LangGraph            │    ┌──────────────────┐
-                         │  IAM roles + Secrets  │    │ ElastiCache      │
-                         │  Manager (OpenRouter  │    │  for Redis       │
-                         │  key only)            │    │  (cache/sessions)│
-                         └───────────────────────┘    └──────────────────┘
+  Frontend (React 19)             Backend — Amazon EC2 (t3.micro, Free Tier)          AI
+ ┌──────────────────┐    ┌────────────────────────────────────────────┐    ┌──────────────────┐
+ │ AWS Amplify      │    │ Docker (docker compose)                    │    │ OpenRouter       │
+ │  Hosting (Vite   │───▶│ ┌──────────┐  Governance Pipeline          │───▶│  gpt-4.1         │
+ │  static build)   │REST│ │  Nginx   │  ┌──────────────────┐         │    │  text-embed-3-lg │
+ │ TypeScript       │API │ │ (reverse │  │ 1. Policy        │         │    └──────────────────┘
+ │ Tailwind CSS     │    │ │  proxy,  │──▶ 2. Crisis ‖ RAG  │         │
+ │ shadcn/ui        │    │ │  TLS)    │  │ 3. Rerank + gate │         │
+ │ Recharts         │    │ └──────────┘  │ 4. Analysis      │         │
+ │ Framer Motion    │    │      │        │ 5. Trace         │         │
+ └──────────────────┘    │      ▼        └──────────────────┘         │
+                         │ ┌──────────┐  LangGraph                    │
+                         │ │ FastAPI  │  IAM instance profile +       │
+                         │ │ (Docker  │  Secrets Manager (OpenRouter  │
+                         │ │ container│  key only)                    │
+                         │ │  )       │                               │
+                         │ └────┬─────┘                               │
+                         │      ├──────────────┐                      │
+                         │      ▼              ▼                      │
+                         │ ┌──────────┐   ┌──────────┐                │
+                         │ │PostgreSQL│   │  Redis   │                │
+                         │ │+ pgvector│   │ (Docker) │                │
+                         │ │ (Docker) │   │ cache/   │                │
+                         │ │HNSW+GIN  │   │ sessions │                │
+                         │ └──────────┘   └──────────┘                │
+                         └────────────────────────────────────────────┘
                                    │
                                    ▼
                           CloudWatch + AWS X-Ray + OpenTelemetry
 ```
 
-Everything above runs on AWS. Steps 2a (crisis detection) and 2b (retrieval) run concurrently — crisis checking stays strictly blocking, but leaves the critical path of a successful request. The confidence gate at step 3 reads a calibrated cross-encoder score, so generation is blocked whenever no solid evidence was found.
+Everything above runs on AWS, sized to fit inside the Free Tier — a single EC2 instance runs the entire backend stack in Docker (FastAPI, PostgreSQL + pgvector, Redis, Nginx), with only the frontend, auth, storage, secrets, and observability handled by separate managed services. Steps 2a (crisis detection) and 2b (retrieval) run concurrently — crisis checking stays strictly blocking, but leaves the critical path of a successful request. The confidence gate at step 3 reads a calibrated cross-encoder score, so generation is blocked whenever no solid evidence was found.
 
 > Full architecture documentation in [docs/architecture.md](docs/architecture.md)
 
@@ -164,10 +173,10 @@ Everything above runs on AWS. Steps 2a (crisis detection) and 2b (retrieval) run
 | **Backend** | Python 3.13, FastAPI, Pydantic v2, SQLAlchemy 2.0, Alembic |
 | **AI** | OpenRouter (`gpt-4.1`, `text-embedding-3-large`), LangGraph, Structured Outputs |
 | **RAG** | PostgreSQL + pgvector (HNSW), lexical search, RRF fusion, cross-encoder reranking |
-| **Data** | Amazon RDS for PostgreSQL + pgvector, Amazon ElastiCache for Redis |
+| **Data** | PostgreSQL + pgvector and Redis, both in Docker containers on the same Amazon EC2 instance |
 | **Security** | Amazon Cognito (OAuth2 + IAM), rate limiting, prompt injection detection |
 | **Observability** | Amazon CloudWatch, AWS X-Ray, OpenTelemetry |
-| **DevOps** | Docker, AWS App Runner / ECS Fargate, AWS Amplify Hosting, GitHub Actions (OIDC to AWS), Ruff, Pytest |
+| **DevOps** | Docker, Amazon EC2 (Free Tier `t3.micro`), Nginx, Amazon ECR, AWS Amplify Hosting, GitHub Actions (OIDC to AWS), Ruff, Pytest |
 
 > Detail and rationale in [docs/tech-stack.md](docs/tech-stack.md)
 
@@ -175,17 +184,17 @@ Everything above runs on AWS. Steps 2a (crisis detection) and 2b (retrieval) run
 
 ## Deployment
 
-SubtextAI deploys to AWS: **App Runner** (backend) or **ECS Fargate**, **Amplify Hosting** (frontend), **RDS for PostgreSQL + pgvector**, **ElastiCache for Redis**, **S3** for the document corpus, and **OpenRouter** for generation (`gpt-4.1`) and embeddings (`text-embedding-3-large`).
+SubtextAI deploys to AWS, sized to run within the **Free Tier**: a single **Amazon EC2** `t3.micro` instance runs the whole backend stack in Docker — **FastAPI**, **PostgreSQL + pgvector**, **Redis**, and **Nginx** as the reverse proxy — fronted by **Amplify Hosting** (frontend), **S3** for the document corpus, and **OpenRouter** for generation (`gpt-4.1`) and embeddings (`text-embedding-3-large`).
 
 ### Prerequisites
 
 * Python 3.13+
 * Node.js 18+ and npm
 * Docker (for building the backend image)
-* An AWS account with the AWS CLI configured
+* An AWS account with the AWS CLI configured, and an EC2 key pair
 * An [OpenRouter](https://openrouter.ai) API key
 
-### Build and push the backend image
+### Build and push the backend image to ECR
 
 ```bash
 git clone https://github.com/<your-user>/subtextai.git
@@ -197,28 +206,43 @@ docker tag subtextai-api <account-id>.dkr.ecr.<region>.amazonaws.com/subtextai-a
 docker push <account-id>.dkr.ecr.<region>.amazonaws.com/subtextai-api
 ```
 
-### Store the OpenRouter key and run migrations
+### Store the OpenRouter key
 
 ```bash
 aws secretsmanager create-secret \
   --name subtextai/openrouter-api-key \
   --secret-string '{"api_key":"<your-openrouter-key>"}'
-
-cd backend
-alembic upgrade head        # run against the RDS endpoint
 ```
 
-### Deploy backend and frontend
+### Launch EC2 and run the stack with Docker Compose
 
 ```bash
-aws apprunner create-service --service-name subtextai-api --source-configuration '...'
+aws ec2 run-instances \
+  --image-id ami-0abcdef1234567890 \
+  --instance-type t3.micro \
+  --key-name subtextai-key \
+  --iam-instance-profile Name=subtextai-ec2-profile \
+  --security-group-ids <sg-id>
 
+ssh -i subtextai-key.pem ec2-user@<instance-public-ip>
+sudo yum install -y docker && sudo systemctl enable --now docker
+aws ecr get-login-password --region <region> | docker login --username AWS --password-stdin <account-id>.dkr.ecr.<region>.amazonaws.com
+docker pull <account-id>.dkr.ecr.<region>.amazonaws.com/subtextai-api
+
+# docker-compose.yml runs api + postgres (pgvector) + redis + nginx together
+docker compose up -d
+cd backend && alembic upgrade head   # run against the local Postgres container
+```
+
+### Deploy the frontend
+
+```bash
 cd frontend
 npm run build
 aws amplify start-deployment --app-id <app-id> --branch-name main
 ```
 
-> Full infrastructure setup, IAM policies, and env vars in [docs/cloud-deployment-aws.md](docs/cloud-deployment-aws.md) and [docs/deployment.md](docs/deployment.md)
+> Full infrastructure setup (IAM instance profile, Nginx config, backup strategy) and env vars in [docs/cloud-deployment-aws.md](docs/cloud-deployment-aws.md) and [docs/deployment.md](docs/deployment.md)
 
 ---
 
