@@ -8,7 +8,7 @@ Lines of evolution contemplated. Unless otherwise noted, they remain **outside t
 
 ### Specialized Crisis Classifier
 
-When request volume grows enough that the prompt-based call becomes a bottleneck, evaluate a fine-tuned model (DistilBERT or equivalent) to reduce latency and improve precision. It would run locally alongside the prompt-based classifier, served through Ollama or a lightweight local inference runtime.
+When request volume grows enough that the prompt-based call becomes a bottleneck, evaluate a fine-tuned model (DistilBERT or equivalent) to reduce latency and improve cost per classification. It would run alongside the prompt-based classifier, served through a lightweight AWS-hosted inference endpoint (e.g., SageMaker or a small container on App Runner) rather than through OpenRouter.
 
 ### Multilingual Support
 
@@ -24,7 +24,7 @@ Interface to visualize traces, compare prompt versions, and review policy activa
 
 ### Observability Improvements
 
-More indicators in the local metrics store for trend detection and behavior change monitoring. Full OpenTelemetry integration across the pipeline, with an optional local Jaeger instance for trace visualization.
+More indicators in CloudWatch for trend detection and behavior change monitoring. Full OpenTelemetry integration across the pipeline, exported to AWS X-Ray for trace visualization.
 
 ### Deterministic Classifier Layer
 
@@ -34,7 +34,7 @@ Second rule-based layer over the LLM classification for regulatory audit scenari
 
 Semantic similarity caching (via Redis + pgvector) between queries to reduce model calls on equivalent messages.
 
-This is the highest-impact item on the list. The main analysis call is both the latency bottleneck and the binding constraint against local GPU throughput — a single machine serves one generation at a time. Avoiding it on equivalent messages relieves both at once.
+This is the highest-impact item on the list. The main analysis call is both the latency bottleneck and the largest driver of OpenRouter token cost. Avoiding it on equivalent messages relieves both at once.
 
 ---
 
