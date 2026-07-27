@@ -2,9 +2,9 @@
 
 ## System Overview
 
-Production architecture on AWS, with clear separation between frontend, backend, and AI services. The backend is built with **Python 3.13 and FastAPI**, the frontend with **React 19**, and the AI layer is served through **OpenRouter** (`gpt-4.1` for generation, `text-embedding-3-large` for embeddings) with **PostgreSQL + pgvector** (Amazon RDS) for data and vector search.
+Production architecture on AWS, sized to run within the **Free Tier**, with clear separation between frontend, backend, and AI services. The backend is built with **Python 3.13 and FastAPI**, the frontend with **React 19**, and the AI layer is served through **OpenRouter** (`gpt-4.1` for generation, `text-embedding-3-large` for embeddings) with **PostgreSQL + pgvector** for data and vector search — running as a Docker container alongside the backend on a single **Amazon EC2** instance rather than on a managed database service.
 
-There are no standing AWS credentials in configuration — every AWS-native call (RDS, S3, Secrets Manager, CloudWatch) is authenticated via an IAM role assumed by the running service. The one exception is OpenRouter, a third party outside the AWS trust boundary, whose API key is resolved from Secrets Manager at startup rather than stored anywhere. See [Cloud Deployment (AWS)](cloud-deployment-aws.md) for the full rationale.
+There are no standing AWS credentials in configuration — every AWS-native call (S3, Secrets Manager, CloudWatch) is authenticated via an **IAM instance profile** attached to the EC2 instance. The one exception is OpenRouter, a third party outside the AWS trust boundary, whose API key is resolved from Secrets Manager at startup rather than stored anywhere. See [Cloud Deployment (AWS)](cloud-deployment-aws.md) for the full rationale.
 
 ---
 
@@ -23,44 +23,43 @@ There are no standing AWS credentials in configuration — every AWS-native call
                          │ REST API / WebSockets
                          │ (Cognito-issued OAuth2 token)
 ┌────────────────────────▼─────────────────────────────────────┐
-│    AWS App Runner / ECS Fargate — FastAPI Backend             │
-│                                                              │
-│  Governance pipeline (cascade short-circuit):                │
-│                                                              │
-│  1. Policy validation (no LLM)                               │
-│     → min length, language, rate limit, prompt injection     │
-│                    ↓                                         │
-│  2. Parallel branch                                          │
-│     ├─ Crisis classifier (LLM call #1)   [blocking]          │
-│     └─ Embedding + hybrid search (vector + lexical + RRF)    │
-│                    ↓                                         │
-│  3. Cross-encoder reranking + confidence gate                │
-│     → calibrated score threshold; blocks if ungrounded       │
-│                    ↓                                         │
-│  4. Main LLM — Pragmatic analysis (LLM call #2)              │
-│     → OpenRouter (gpt-4.1) with mandatory grounding          │
-│                    ↓                                         │
-│  5. Traceability                                             │
-│     → Full record in RDS PostgreSQL with unique trace_id     │
-│                                                              │
-│  Orchestration: LangGraph                                    │
-│  Validation: Pydantic v2 + Structured Outputs                │
-│  Auth: IAM role (AWS services) + Secrets Manager (OpenRouter)│
-└──┬───────────┬──────────────────┬────────────────────────────┘
-   │           │                  │
-   ▼           ▼                  ▼
-OpenRouter    Amazon RDS         ElastiCache
-gpt-4.1       PostgreSQL         for Redis
-text-embed-   + pgvector         (Cache, sessions)
-3-large       HNSW + GIN index
-              Traces, vectors,
-              prompt versions
-                    │
-                    ▼
+│       Amazon EC2 (t3.micro, Free Tier) — Docker Compose      │
+│                                                                │
+│  ┌─────────┐          Governance pipeline (cascade):          │
+│  │  Nginx  │          1. Policy validation (no LLM)           │
+│  │ reverse │             → length, language, rate limit,      │
+│  │ proxy,  │──┐            prompt injection                   │
+│  │ TLS     │  │          2. Parallel branch                   │
+│  └─────────┘  │             ├─ Crisis classifier  [blocking]  │
+│               ▼             └─ Embedding + hybrid search       │
+│  ┌───────────────────────┐  3. Cross-encoder rerank + gate    │
+│  │  FastAPI (Docker)     │     → blocks if ungrounded          │
+│  │  Governance Pipeline  │  4. Main LLM — Pragmatic analysis   │
+│  │  LangGraph            │     → OpenRouter (gpt-4.1)          │
+│  │  Pydantic v2 +        │  5. Traceability                    │
+│  │  Structured Outputs   │     → full record with trace_id     │
+│  └──┬─────────────────┬──┘                                    │
+│     ▼                 ▼          Auth: IAM instance profile   │
+│  ┌───────────┐   ┌──────────┐    (S3, Secrets Manager,        │
+│  │PostgreSQL │   │  Redis   │     CloudWatch) + Secrets       │
+│  │+ pgvector │   │ (Docker) │     Manager (OpenRouter key)    │
+│  │ (Docker)  │   │ Cache,   │                                 │
+│  │ HNSW+GIN  │   │ sessions │                                 │
+│  │ Traces,   │   └──────────┘                                 │
+│  │ vectors   │                                                 │
+│  └───────────┘                                                 │
+└────────────────────────┬───────────────────────────────────────┘
+                         │
+                         ▼
+                  OpenRouter (gpt-4.1, text-embedding-3-large)
+                         │
+                         ▼
              CloudWatch + AWS X-Ray + OpenTelemetry
-                    │
-                    ▼
-             GitHub Actions (CI/CD: lint + test + deploy, OIDC to AWS)
+                    (CloudWatch agent on the instance)
+                         │
+                         ▼
+             GitHub Actions (CI/CD: lint + test + deploy, OIDC to AWS,
+                             build → ECR → EC2 pull + restart)
 ```
 
 **Cascade short-circuit pipeline:** if any policy triggers at any step, the flow stops and the main model is never invoked. Order is strict: policies → crisis/retrieval → confidence gate → pragmatic analysis → traceability.
@@ -93,7 +92,7 @@ Main views:
 
 ## Backend
 
-Python 3.13 + FastAPI, containerized with Docker and deployed to **AWS App Runner** (default) or **ECS Fargate** (see [Deployment](deployment.md)).
+Python 3.13 + FastAPI, containerized with Docker and deployed as a container on a single **Amazon EC2** `t3.micro` instance, alongside its Postgres and Redis containers and an Nginx reverse proxy — all orchestrated with Docker Compose (see [Deployment](deployment.md)).
 
 | Technology | Role |
 |-|-|
@@ -121,7 +120,7 @@ Main pipeline components:
 
 ## RAG Layer
 
-**PostgreSQL + pgvector** (Amazon RDS) with explicitly implemented hybrid retrieval.
+**PostgreSQL + pgvector**, running in a Docker container on the same EC2 instance as the backend, with explicitly implemented hybrid retrieval.
 
 pgvector provides vector similarity only, so hybrid search is built in three stages rather than consumed as a feature:
 
@@ -141,9 +140,9 @@ Documents are chunked and vectorized via **OpenRouter** (`text-embedding-3-large
 
 | Technology | Role |
 |-|-|
-| **Amazon RDS for PostgreSQL** | Primary database — traces, prompt versions, audit records |
+| **PostgreSQL (Docker container, EC2)** | Primary database — traces, prompt versions, audit records |
 | **pgvector** | Vector extension for embeddings and semantic search |
-| **Amazon ElastiCache for Redis** | Cache layer and session management |
+| **Redis (Docker container, EC2)** | Cache layer and session management |
 
 Each interaction generates a persistent record identified by a unique `trace_id` that includes: input message and context, retrieved fragments with vector/lexical/RRF/reranker scores, embedding and reranker model identity, exact prompt and version (`prompt_version`), model version, confidence level, applied policy (if any), `grounded` field, per-stage latency, and timestamp.
 
@@ -161,13 +160,14 @@ This separation allows an erasure request to null the text while leaving the aud
 
 | Component | Role |
 |-|-|
-| **AWS App Runner / ECS Fargate** | Runs the FastAPI backend container, scaling on request volume |
+| **Amazon EC2 (`t3.micro`, Free Tier)** | Runs the FastAPI backend, PostgreSQL, Redis, and Nginx as Docker containers via Docker Compose |
+| **Nginx** | Reverse proxy on the EC2 instance — TLS termination and routing to the FastAPI container |
 | **AWS Amplify Hosting** | Builds and serves the React frontend from the tracked Git branch |
-| **Amazon RDS for PostgreSQL + pgvector** | Traces, vectors, audit records — single instance, single consistency model |
-| **Amazon ElastiCache for Redis** | Cache and session storage |
-| **Amazon S3** | Document storage for the RAG corpus |
+| **PostgreSQL + pgvector (Docker, on EC2)** | Traces, vectors, audit records — single container, single consistency model, backed up via scheduled `pg_dump` to S3 |
+| **Redis (Docker, on EC2)** | Cache and session storage |
+| **Amazon S3** | Document storage for the RAG corpus, and destination for database backups |
 | **AWS Secrets Manager** | Holds the one standing credential the stack needs — the OpenRouter API key |
-| **IAM roles** | Every AWS-native call (RDS, S3, Secrets Manager, CloudWatch) authenticates with short-lived, automatically rotated credentials — nothing to leak through logs or environment dumps |
+| **IAM instance profile** | Every AWS-native call (S3, Secrets Manager, CloudWatch) authenticates with short-lived, automatically rotated credentials assumed by the EC2 instance — nothing to leak through logs or environment dumps |
 
 See [Cloud Deployment (AWS)](cloud-deployment-aws.md) for region configuration and data residency notes.
 
@@ -178,14 +178,14 @@ See [Cloud Deployment (AWS)](cloud-deployment-aws.md) for region configuration a
 | Mechanism | Implementation |
 |-|-|
 | **User authentication** | Amazon Cognito, OAuth2 tokens validated by the backend |
-| **Database auth** | RDS IAM authentication — short-lived tokens, no stored password |
+| **Database auth** | Password stored in the Docker Compose environment, scoped to the internal Docker network only — Postgres is never exposed on a public port |
 | **Rate limiting** | Per user/IP (> 10 req/min) |
 | **Prompt injection** | Detection and audit logging |
 | **Crisis classification** | Dedicated LLM classifier |
-| **Secrets** | AWS Secrets Manager holds only the OpenRouter API key — every AWS-native credential is IAM-issued and short-lived |
+| **Secrets** | AWS Secrets Manager holds only the OpenRouter API key — every AWS-native credential is IAM-issued and short-lived via the instance profile |
 | **CI/CD** | GitHub Actions authenticates to AWS via OIDC federated credentials — no long-lived IAM access key in GitHub |
 
-Since AWS-native services authenticate via IAM roles, the only credential that can leak through logs or environment dumps is the OpenRouter key — and it lives in Secrets Manager, resolved at runtime rather than set in configuration.
+Since AWS-native services authenticate via the EC2 instance's IAM role, the only credential that can leak through logs or environment dumps is the OpenRouter key — and it lives in Secrets Manager, resolved at runtime rather than set in configuration. The Postgres and Redis containers stay on an internal Docker network with no public port, so they carry no exposure beyond the instance itself.
 
 ---
 
