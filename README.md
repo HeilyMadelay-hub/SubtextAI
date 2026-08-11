@@ -8,27 +8,17 @@ AI-powered communication intelligence platform that helps people understand inte
 
 ## Screenshots
 
-<!-- Replace with actual screenshots -->
-
 | Analysis | Replay Mode | Live Telemetry | Audit |
 |-|-|-|-|
 | ![Analysis](docs/screenshots/analysis.png) | ![Replay](docs/screenshots/replay.png) | ![Telemetry](docs/screenshots/telemetry.png) | ![Audit](docs/screenshots/audit.png) |
 
 ---
 
-## Demo
-
-<!-- Replace with ~20 second GIF showing the full flow -->
-
-![SubtextAI Demo](docs/screenshots/demo.gif)
-
----
-
 ## Overview
 
-SubtextAI is a communication intelligence engine that analyzes ambiguous conversations across real-world contexts — **relationships, work, social settings, and negotiation** — and turns them into structured, evidence-based insights.
+SubtextAI is a communication intelligence engine that analyzes ambiguous conversations across real-world contexts — **relationships, work, social settings, and negotiation** — and turns them into structured insights: what was said, what was likely meant, and why.
 
-It detects intent shifts, emotional intensity, and the gap between what's said and what's meant. Every interpretation is grounded in documentary sources, scored with an objective confidence level, and fully auditable by `trace_id`.
+It detects intent shifts and emotional intensity, retrieves the documentary evidence behind each interpretation, scores it with a confidence level, and keeps it fully auditable by `trace_id`.
 
 ---
 
@@ -36,15 +26,15 @@ It detects intent shifts, emotional intensity, and the gap between what's said a
 
 Most misunderstandings aren't about what's said — they're about what's meant.
 
-Unlike a conventional assistant, **SubtextAI is not a black box**: every interpretation is grounded in real documentary sources, calculated with an objective confidence level, and fully auditable. It's not an academic chatbot — it's a conversational behavior interpretation tool.
+Tone, intent, and emotional subtext get lost in text-based communication, and by the time a conflict escalates, it's hard to pinpoint where the interpretation diverged from the intention. Generic AI assistants don't help here: they generate plausible-sounding answers without explaining why, and without any way to verify the reasoning behind them.
 
 ---
 
 ## Why SubtextAI?
 
-Unlike traditional AI assistants, SubtextAI doesn't just generate answers.
+Unlike a general-purpose assistant, SubtextAI is not a black box. It doesn't just generate an answer — it explains *why* a message may be interpreted a certain way, points to the evidence behind that interpretation, and helps the user decide how to respond.
 
-It explains *why* a message may be interpreted in a certain way, grounds every conclusion on evidence, and helps users make better communication decisions.
+It's not an academic chatbot — it's a conversational behavior interpretation tool.
 
 ---
 
@@ -108,8 +98,8 @@ Suggested response
 
 | Principle | What it means |
 |-|-|
-| **Explainable AI** | Every interpretation is grounded in documentary sources. No evidence, no response. |
-| **Enterprise Governance** | Security rules live in the pipeline, not in the prompt — the model never executes if a critical policy is violated. |
+| **Explainable AI** | Every interpretation is grounded in documentary sources — the confidence gate is designed to block generation when no solid evidence is found. |
+| **Enterprise Governance** | Security rules live in the pipeline, not in the prompt, so a critical policy violation is designed to stop generation before the model runs. |
 | **Full Traceability** | Every response is reconstructible via `trace_id`: documents, scores, prompt version, model, and policies evaluated. |
 | **Privacy by Design** | Raw text and audit annotations are stored separately, so erasure requests and retention limits never break the audit trail. |
 
@@ -119,9 +109,13 @@ Suggested response
 
 ## Architecture
 
-<p align="center"> <img src="docs/screenshots/arquitectura.png" alt="Narek Architecture" width="900"> </p>
+<p align="center">
+  <img src="docs/screenshots/arquitectura.png" alt="SubtextAI Architecture" width="900">
+</p>
 
-Everything above runs on AWS, sized to fit inside the Free Tier — a single EC2 instance runs the entire backend stack in Docker (FastAPI, PostgreSQL + pgvector, Redis, Nginx), with only the frontend, auth, storage, secrets, and observability handled by separate managed services. Steps 2a (crisis detection) and 2b (retrieval) run concurrently — crisis checking stays strictly blocking, but leaves the critical path of a successful request. The confidence gate at step 3 reads a calibrated cross-encoder score, so generation is blocked whenever no solid evidence was found.
+A request enters through the API and is checked for crisis signals while relevant evidence is retrieved from the document corpus in parallel. The retrieved evidence is scored and evaluated against a confidence gate — if it doesn't clear the threshold, no response is generated. Applicable policies are checked alongside retrieval, and once a response is accepted for generation, it's produced and logged with full trace metadata (documents used, scores, prompt version, model, policies evaluated) for later audit.
+
+Everything runs on AWS, sized to fit inside the Free Tier: a single EC2 instance runs the backend stack in Docker (FastAPI, PostgreSQL + pgvector, Redis, Nginx), with the frontend, auth, storage, secrets, and observability handled by separate managed services.
 
 > Full architecture documentation in [docs/architecture.md](docs/architecture.md)
 
@@ -148,6 +142,14 @@ Everything above runs on AWS, sized to fit inside the Free Tier — a single EC2
 
 SubtextAI deploys to AWS, sized to run within the **Free Tier**: a single **Amazon EC2** `t3.micro` instance runs the whole backend stack in Docker — **FastAPI**, **PostgreSQL + pgvector**, **Redis**, and **Nginx** as the reverse proxy — fronted by **Amplify Hosting** (frontend), **S3** for the document corpus, and **OpenRouter** for generation (`gpt-4.1`) and embeddings (`text-embedding-3-large`).
 
+### Quick Start
+
+1. Build the backend image and push it to Amazon ECR.
+2. Store the OpenRouter API key in AWS Secrets Manager.
+3. Launch the EC2 instance and run `docker compose up -d` to start API + PostgreSQL + Redis + Nginx together.
+4. Run `alembic upgrade head` against the Postgres container to apply migrations.
+5. Build the frontend and deploy it to Amplify Hosting.
+
 ### Prerequisites
 
 * Python 3.13+
@@ -156,55 +158,7 @@ SubtextAI deploys to AWS, sized to run within the **Free Tier**: a single **Amaz
 * An AWS account with the AWS CLI configured, and an EC2 key pair
 * An [OpenRouter](https://openrouter.ai) API key
 
-### Build and push the backend image to ECR
-
-```bash
-git clone https://github.com/<your-user>/subtextai.git
-cd subtextai
-
-docker build -f docker/Dockerfile.backend -t subtextai-api .
-aws ecr get-login-password --region <region> | docker login --username AWS --password-stdin <account-id>.dkr.ecr.<region>.amazonaws.com
-docker tag subtextai-api <account-id>.dkr.ecr.<region>.amazonaws.com/subtextai-api
-docker push <account-id>.dkr.ecr.<region>.amazonaws.com/subtextai-api
-```
-
-### Store the OpenRouter key
-
-```bash
-aws secretsmanager create-secret \
-  --name subtextai/openrouter-api-key \
-  --secret-string '{"api_key":"<your-openrouter-key>"}'
-```
-
-### Launch EC2 and run the stack with Docker Compose
-
-```bash
-aws ec2 run-instances \
-  --image-id ami-0abcdef1234567890 \
-  --instance-type t3.micro \
-  --key-name subtextai-key \
-  --iam-instance-profile Name=subtextai-ec2-profile \
-  --security-group-ids <sg-id>
-
-ssh -i subtextai-key.pem ec2-user@<instance-public-ip>
-sudo yum install -y docker && sudo systemctl enable --now docker
-aws ecr get-login-password --region <region> | docker login --username AWS --password-stdin <account-id>.dkr.ecr.<region>.amazonaws.com
-docker pull <account-id>.dkr.ecr.<region>.amazonaws.com/subtextai-api
-
-# docker-compose.yml runs api + postgres (pgvector) + redis + nginx together
-docker compose up -d
-cd backend && alembic upgrade head   # run against the local Postgres container
-```
-
-### Deploy the frontend
-
-```bash
-cd frontend
-npm run build
-aws amplify start-deployment --app-id <app-id> --branch-name main
-```
-
-> Full infrastructure setup (IAM instance profile, Nginx config, backup strategy) and env vars in [docs/cloud-deployment-aws.md](docs/cloud-deployment-aws.md) and [docs/deployment.md](docs/deployment.md)
+> Full step-by-step guide — IAM instance profile, Nginx config, backup strategy, and environment variables — in [docs/cloud-deployment-aws.md](docs/cloud-deployment-aws.md) and [docs/deployment.md](docs/deployment.md)
 
 ---
 
