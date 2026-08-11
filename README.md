@@ -26,7 +26,9 @@ It detects intent shifts and emotional intensity, retrieves the documentary evid
 
 Most misunderstandings aren't about what's said — they're about what's meant.
 
-Tone, intent, and emotional subtext get lost in text-based communication, and by the time a conflict escalates, it's hard to pinpoint where the interpretation diverged from the intention. Generic AI assistants don't help here: they generate plausible-sounding answers without explaining why, and without any way to verify the reasoning behind them.For high-stakes or emotionally sensitive conversations, plausibility is not enough  users need context, evidence, uncertainty, and a way to reconstruct how an interpretation was produced.
+Tone, intent, and emotional subtext get lost in text-based communication, and by the time a conflict escalates, it's hard to pinpoint where the interpretation diverged from the intention. Generic AI assistants don't help here: they generate plausible-sounding answers without explaining why, and without any way to verify the reasoning behind them.
+
+For high-stakes or emotionally sensitive conversations, plausibility is not enough — users need context, evidence, uncertainty, and a way to reconstruct how an interpretation was produced.
 
 ---
 
