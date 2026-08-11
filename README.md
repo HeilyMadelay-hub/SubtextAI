@@ -16,7 +16,7 @@ AI-powered communication intelligence platform that helps people understand inte
 
 ## Overview
 
-SubtextAI is a communication intelligence engine that analyzes ambiguous conversations across real-world contexts — **relationships, work, social settings, and negotiation** — and turns them into structured insights: what was said, what was likely meant, and why.
+SubtextAI is a communication intelligence engine that analyzes ambiguous conversations across real-world contexts — **relationships, work, social settings, and negotiation** — and turns them into structured insights about what was said, what may have been intended, and what evidence supports that interpretation.
 
 It detects intent shifts and emotional intensity, retrieves the documentary evidence behind each interpretation, scores it with a confidence level, and keeps it fully auditable by `trace_id`.
 
@@ -26,17 +26,13 @@ It detects intent shifts and emotional intensity, retrieves the documentary evid
 
 Most misunderstandings aren't about what's said — they're about what's meant.
 
-Tone, intent, and emotional subtext get lost in text-based communication, and by the time a conflict escalates, it's hard to pinpoint where the interpretation diverged from the intention. Generic AI assistants don't help here: they generate plausible-sounding answers without explaining why, and without any way to verify the reasoning behind them.
+Tone, intent, and emotional subtext get lost in text-based communication, and by the time a conflict escalates, it's hard to pinpoint where the interpretation diverged from the intention. Generic AI assistants don't help here: they generate plausible-sounding answers without explaining why, and without any way to verify the reasoning behind them.For high-stakes or emotionally sensitive conversations, plausibility is not enough  users need context, evidence, uncertainty, and a way to reconstruct how an interpretation was produced.
 
 ---
 
 ## Why SubtextAI?
 
-Unlike a general-purpose assistant, SubtextAI is not a black box. It doesn't just generate an answer — it explains *why* a message may be interpreted a certain way, points to the evidence behind that interpretation, and helps the user decide how to respond.
-
-It's not an academic chatbot — it's a conversational behavior interpretation tool.
-
----
+Unlike a general-purpose assistant, SubtextAI is not a black box. It doesn't just generate an answer it explains why a message may be interpreted a certain way, points to the evidence behind that interpretation, and helps the user decide how to respond.
 
 ## Philosophy
 
@@ -72,22 +68,28 @@ This system does not replace professional advice, therapy, or legal counsel.
 
 **Live Session Telemetry** — Real-time panel tracking emotional velocity, conflict acceleration, and accumulated tension as the conversation unfolds, message by message.
 
+**Evidence & Confidence Gate** — Every interpretation is evaluated against retrieved evidence and a confidence threshold; when the evidence is insufficient, generation is blocked rather than producing an unsupported interpretation.
+
 ---
 
 ## How It Works
 
 ```
-Paste a conversation
+Conversation Input
         ↓
-AI understands the context
+Context & Safety Analysis
         ↓
-Relevant evidence is retrieved
+Parallel Retrieval + Policy Checks
         ↓
-Conversation is analysed
+Hybrid Search + Reranking
         ↓
-Insights are generated
+Confidence Gate
         ↓
-Suggested response
+Structured Analysis
+        ↓
+Response Generation
+        ↓
+Trace & Audit
 ```
 
 > Full technical pipeline in [docs/ai-pipeline.md](docs/ai-pipeline.md)
@@ -99,7 +101,7 @@ Suggested response
 | Principle | What it means |
 |-|-|
 | **Explainable AI** | Every interpretation is grounded in documentary sources — the confidence gate is designed to block generation when no solid evidence is found. |
-| **Enterprise Governance** | Security rules live in the pipeline, not in the prompt, so a critical policy violation is designed to stop generation before the model runs. |
+| **Policy-Governed AI** | Security and safety policies are enforced in the execution pipeline rather than delegated to the model prompt. |
 | **Full Traceability** | Every response is reconstructible via `trace_id`: documents, scores, prompt version, model, and policies evaluated. |
 | **Privacy by Design** | Raw text and audit annotations are stored separately, so erasure requests and retention limits never break the audit trail. |
 
@@ -115,7 +117,7 @@ Suggested response
 
 A request enters through the API and is checked for crisis signals while relevant evidence is retrieved from the document corpus in parallel. The retrieved evidence is scored and evaluated against a confidence gate — if it doesn't clear the threshold, no response is generated. Applicable policies are checked alongside retrieval, and once a response is accepted for generation, it's produced and logged with full trace metadata (documents used, scores, prompt version, model, policies evaluated) for later audit.
 
-Everything runs on AWS, sized to fit inside the Free Tier: a single EC2 instance runs the backend stack in Docker (FastAPI, PostgreSQL + pgvector, Redis, Nginx), with the frontend, auth, storage, secrets, and observability handled by separate managed services.
+The current deployment is intentionally lightweight: a single EC2 instance runs the backend stack in Docker (FastAPI, PostgreSQL + pgvector, Redis, Nginx), with the frontend, auth, storage, secrets, and observability handled by separate managed services.
 
 > Full architecture documentation in [docs/architecture.md](docs/architecture.md)
 
@@ -185,8 +187,8 @@ Become the communication intelligence platform for personal and enterprise conve
 
 | Phase | Description |
 |-|-|
-| **Current** | Architecture and governance pipeline fully designed; backend implementation (policy engine, retrieval, reranking, traceability) in progress, targeting production on AWS |
-| **Next** | Specialized crisis classifier, multilingual support, semantic cache, audit panel |
+| **Current** | Core analysis pipeline, retrieval, reranking, policy enforcement, and traceability. |
+| **Next** | Specialized crisis classifier, multilingual support, semantic caching, and expanded audit tooling. |
 | **Future** | Real-time streaming analysis, predictive trajectory engine |
 
 > Detail in [docs/roadmap.md](docs/roadmap.md)
