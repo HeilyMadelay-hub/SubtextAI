@@ -6,14 +6,6 @@ AI-powered communication intelligence platform that helps people understand inte
 
 `Python` · `FastAPI` · `React 19` · `AWS` · `OpenRouter` · `PostgreSQL + pgvector` · `Docker`
 
----
-
-## Project Status
-
-🚧 **In active development** — architecture and design complete; backend implementation (policy engine, retrieval, reranking, traceability) in progress, targeting the production AWS deployment described below.
-
----
-
 ## Screenshots
 
 <!-- Replace with actual screenshots -->
@@ -127,37 +119,7 @@ Suggested response
 
 ## Architecture
 
-```
-  Frontend (React 19)             Backend — Amazon EC2 (t3.micro, Free Tier)          AI
- ┌──────────────────┐    ┌────────────────────────────────────────────┐    ┌──────────────────┐
- │ AWS Amplify      │    │ Docker (docker compose)                    │    │ OpenRouter       │
- │  Hosting (Vite   │───▶│ ┌──────────┐  Governance Pipeline          │───▶│  gpt-4.1         │
- │  static build)   │REST│ │  Nginx   │  ┌──────────────────┐         │    │  text-embed-3-lg │
- │ TypeScript       │API │ │ (reverse │  │ 1. Policy        │         │    └──────────────────┘
- │ Tailwind CSS     │    │ │  proxy,  │──▶ 2. Crisis ‖ RAG  │         │
- │ shadcn/ui        │    │ │  TLS)    │  │ 3. Rerank + gate │         │
- │ Recharts         │    │ └──────────┘  │ 4. Analysis      │         │
- │ Framer Motion    │    │      │        │ 5. Trace         │         │
- └──────────────────┘    │      ▼        └──────────────────┘         │
-                         │ ┌──────────┐  LangGraph                    │
-                         │ │ FastAPI  │  IAM instance profile +       │
-                         │ │ (Docker  │  Secrets Manager (OpenRouter  │
-                         │ │ container│  key only)                    │
-                         │ │  )       │                               │
-                         │ └────┬─────┘                               │
-                         │      ├──────────────┐                      │
-                         │      ▼              ▼                      │
-                         │ ┌──────────┐   ┌──────────┐                │
-                         │ │PostgreSQL│   │  Redis   │                │
-                         │ │+ pgvector│   │ (Docker) │                │
-                         │ │ (Docker) │   │ cache/   │                │
-                         │ │HNSW+GIN  │   │ sessions │                │
-                         │ └──────────┘   └──────────┘                │
-                         └────────────────────────────────────────────┘
-                                   │
-                                   ▼
-                          CloudWatch + AWS X-Ray + OpenTelemetry
-```
+<p align="center"> <img src="docs/screenshots/arquitectura.png" alt="Narek Architecture" width="900"> </p>
 
 Everything above runs on AWS, sized to fit inside the Free Tier — a single EC2 instance runs the entire backend stack in Docker (FastAPI, PostgreSQL + pgvector, Redis, Nginx), with only the frontend, auth, storage, secrets, and observability handled by separate managed services. Steps 2a (crisis detection) and 2b (retrieval) run concurrently — crisis checking stays strictly blocking, but leaves the critical path of a successful request. The confidence gate at step 3 reads a calibrated cross-encoder score, so generation is blocked whenever no solid evidence was found.
 
