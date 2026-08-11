@@ -18,7 +18,7 @@ AI-powered communication intelligence platform that helps people understand inte
 
 SubtextAI is a communication intelligence engine that analyzes ambiguous conversations across real-world contexts — **relationships, work, social settings, and negotiation** — and turns them into structured insights about what was said, what may have been intended, and what evidence supports that interpretation.
 
-It detects intent shifts and emotional intensity, retrieves the documentary evidence behind each interpretation, scores it with a confidence level, and keeps it fully auditable by `trace_id`.
+It detects intent shifts and emotional intensity, retrieves the evidence supporting each interpretation, scores it with a confidence level, and keeps it fully auditable by `trace_id`.
 
 ---
 
@@ -100,7 +100,7 @@ Trace & Audit
 
 ## Why SubtextAI is Different
 
-| Principle | What it means |
+| **Principle** | **What it means** |
 |-|-|
 | **Explainable AI** | Every interpretation is grounded in documentary sources — the confidence gate is designed to block generation when no solid evidence is found. |
 | **Policy-Governed AI** | Security and safety policies are enforced in the execution pipeline rather than delegated to the model prompt. |
@@ -127,7 +127,7 @@ The current deployment is intentionally lightweight: a single EC2 instance runs 
 
 ## Tech Stack
 
-| Layer | Technology |
+| **Layer** | **Technology** |
 |-|-|
 | **Frontend** | React 19, TypeScript, Vite, Tailwind CSS, shadcn/ui, Recharts, Framer Motion |
 | **Backend** | Python 3.13, FastAPI, Pydantic v2, SQLAlchemy 2.0, Alembic |
@@ -144,7 +144,8 @@ The current deployment is intentionally lightweight: a single EC2 instance runs 
 
 ## Deployment
 
-SubtextAI deploys to AWS, sized to run within the **Free Tier**: a single **Amazon EC2** `t3.micro` instance runs the whole backend stack in Docker — **FastAPI**, **PostgreSQL + pgvector**, **Redis**, and **Nginx** as the reverse proxy — fronted by **Amplify Hosting** (frontend), **S3** for the document corpus, and **OpenRouter** for generation (`gpt-4.1`) and embeddings (`text-embedding-3-large`).
+SubtextAI deploys to AWS with a lightweight architecture designed to fit within the **AWS Free Tier**: a single **Amazon EC2** `t3.micro` instance runs the whole backend stack in Docker — **FastAPI**, **PostgreSQL + pgvector**, **Redis**, and **Nginx** as the reverse proxy — fronted by **Amplify Hosting** (frontend), **S3** for the document corpus, and **OpenRouter** for generation (`gpt-4.1`) and embeddings (`text-embedding-3-large`).
+
 
 ### Quick Start
 
@@ -187,7 +188,7 @@ SubtextAI deploys to AWS, sized to run within the **Free Tier**: a single **Amaz
 
 Become the communication intelligence platform for personal and enterprise conversations.
 
-| Phase | Description |
+| **Phase** | **Description** |
 |-|-|
 | **Current** | Core analysis pipeline, retrieval, reranking, policy enforcement, and traceability. |
 | **Next** | Specialized crisis classifier, multilingual support, semantic caching, and expanded audit tooling. |
